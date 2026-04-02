@@ -1,0 +1,16 @@
+{
+  "name": "obs-petagents",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "build": "node esbuild.config.mjs production",
+    "dev": "node esbuild.config.mjs",
+    "check": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^24.5.2",
+    "esbuild": "^0.25.10",
+    "obsidian": "^1.8.10",
+    "typescript": "^5.9.2"
+  }
+}

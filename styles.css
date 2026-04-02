@@ -1,0 +1,716 @@
+.pet-agents-view,
+.pet-agents-shell {
+  height: 100%;
+}
+
+.pet-agents-view {
+  padding: 0 !important;
+  background: transparent;
+  box-sizing: border-box;
+}
+
+.pet-agents-shell {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 10px 12px 2px;
+  color: var(--text-normal);
+  background: transparent;
+}
+
+.pet-agents-messages {
+  border: 1px solid rgba(111, 146, 184, 0.16);
+  background: rgba(14, 19, 28, 0.62);
+  backdrop-filter: blur(14px);
+  box-shadow: 0 14px 34px rgba(5, 8, 14, 0.16);
+}
+
+.pet-agents-header-pets {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  justify-content: flex-start;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.pet-agents-header-pets::-webkit-scrollbar {
+  display: none;
+}
+
+.pet-agents-header-pet {
+  position: relative;
+  flex: 0 0 auto;
+  width: 70px;
+  height: 70px;
+  border: 1px solid rgba(120, 153, 188, 0.14);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.02);
+  display: grid;
+  place-items: center;
+  transition:
+    border-color 140ms ease,
+    background-color 140ms ease,
+    box-shadow 140ms ease,
+    transform 140ms ease;
+}
+
+.pet-agents-header-pet:hover {
+  border-color: rgba(132, 171, 212, 0.3);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.pet-agents-header-pet.is-selected {
+  border-color: rgba(122, 175, 231, 0.46);
+  background: rgba(57, 91, 131, 0.18);
+}
+
+.pet-agents-header-pet.is-current {
+  box-shadow: inset 0 0 0 1px rgba(111, 163, 217, 0.22);
+}
+
+.pet-agents-header-pet.is-speaking {
+  box-shadow:
+    inset 0 0 0 1px rgba(111, 163, 217, 0.22),
+    0 0 0 1px rgba(111, 163, 217, 0.16);
+}
+
+.pet-agents-header-pet.is-working {
+  background: rgba(66, 102, 143, 0.22);
+}
+
+.pet-agents-header-sprite,
+.pet-agents-avatar {
+  image-rendering: pixelated;
+  background: transparent;
+  object-fit: cover;
+}
+
+.pet-agents-header-sprite {
+  border-radius: 14px;
+  padding: 0;
+}
+
+.pet-agents-header-markers {
+  position: absolute;
+  right: 7px;
+  bottom: 7px;
+  display: flex;
+  gap: 4px;
+}
+
+.pet-agents-header-markers span {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: rgba(144, 171, 200, 0.4);
+}
+
+.pet-agents-header-markers .is-current {
+  background: rgba(124, 182, 238, 0.92);
+}
+
+.pet-agents-header-markers .is-speaking {
+  background: rgba(133, 213, 255, 0.92);
+}
+
+.pet-agents-header-markers .is-working {
+  background: rgba(117, 198, 158, 0.92);
+}
+
+.pet-agents-header .is-hidden,
+.pet-agents-composer .is-hidden {
+  display: none;
+}
+
+.pet-agents-status-launcher {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 10px;
+}
+
+.pet-agents-status-card {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  margin-bottom: 14px;
+  padding: 12px;
+  border-radius: 18px;
+  border: 1px solid rgba(111, 146, 184, 0.14);
+  background: rgba(16, 22, 31, 0.78);
+}
+
+.pet-agents-status-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.pet-agents-status-summary {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.pet-agents-status-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: rgba(241, 246, 255, 0.92);
+}
+
+.pet-agents-status-copy {
+  font-size: 12px;
+  color: rgba(173, 193, 217, 0.74);
+}
+
+.pet-agents-status-toggle {
+  flex: 0 0 auto;
+  height: 30px;
+  padding: 0 12px;
+  border: 1px solid rgba(113, 149, 188, 0.18);
+  border-radius: 999px;
+  background: rgba(42, 51, 64, 0.84);
+  color: rgba(232, 240, 250, 0.88);
+}
+
+.pet-agents-status-toggle.is-launcher {
+  width: 30px;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  border-radius: 10px;
+}
+
+.pet-agents-status-body {
+  display: grid;
+  gap: 10px;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid rgba(111, 146, 184, 0.12);
+}
+
+.pet-agents-header-detail {
+  margin-top: 10px;
+  padding: 12px;
+  border-radius: 16px;
+  border: 1px solid rgba(111, 146, 184, 0.14);
+  background: rgba(21, 28, 39, 0.72);
+}
+
+.pet-agents-header-detail-top {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  justify-content: space-between;
+}
+
+.pet-agents-header-detail-title {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.pet-agents-header-detail-title strong {
+  font-size: 14px;
+  color: rgba(245, 249, 255, 0.95);
+}
+
+.pet-agents-header-detail-title span {
+  font-size: 12px;
+  color: rgba(174, 194, 218, 0.74);
+}
+
+.pet-agents-header-detail-pills {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.pet-agents-header-detail-pills span,
+.pet-agents-header-detail-meta span {
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: rgba(80, 108, 140, 0.24);
+  color: rgba(211, 226, 244, 0.82);
+  font-size: 11px;
+}
+
+.pet-agents-header-detail-copy {
+  display: grid;
+  gap: 6px;
+  margin-top: 10px;
+  color: rgba(221, 231, 244, 0.84);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.pet-agents-header-detail-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.pet-agents-header-detail-quote {
+  margin-top: 10px;
+  padding: 10px 12px;
+  border-radius: 14px;
+  background: rgba(35, 46, 61, 0.8);
+  color: rgba(232, 240, 250, 0.88);
+  line-height: 1.55;
+}
+
+.pet-agents-header-detail-label {
+  margin-bottom: 6px;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: rgba(146, 175, 207, 0.78);
+}
+
+.pet-agents-messages {
+  flex: 1;
+  min-height: 220px;
+  overflow-y: auto;
+  border-radius: 20px;
+  padding: 14px 12px 18px;
+}
+
+.pet-agents-empty {
+  display: grid;
+  place-items: center;
+  min-height: 180px;
+  text-align: center;
+}
+
+.pet-agents-empty h3 {
+  margin: 0 0 6px;
+  color: rgba(244, 248, 255, 0.95);
+}
+
+.pet-agents-empty p {
+  max-width: 420px;
+  margin: 0;
+  color: rgba(180, 197, 219, 0.74);
+  line-height: 1.6;
+}
+
+.pet-agents-message-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.pet-agents-message-row.is-user {
+  justify-content: flex-end;
+}
+
+.pet-agents-avatar {
+  width: 28px;
+  height: 28px;
+  border-radius: 10px;
+  padding: 0;
+  flex: 0 0 auto;
+}
+
+.pet-agents-bubble-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-width: min(82%, 760px);
+}
+
+.pet-agents-message-title {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-height: 20px;
+  color: rgba(176, 194, 218, 0.72);
+  font-size: 12px;
+}
+
+.pet-agents-inline-tag {
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: rgba(105, 138, 177, 0.12);
+  color: rgba(194, 213, 237, 0.8);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.pet-agents-meta-toggle,
+.pet-agents-toolbar-button,
+.pet-agents-segment-button,
+.pet-agents-composer-toggle,
+.pet-agents-popover-button,
+.pet-agents-overflow-action {
+  border: 1px solid rgba(113, 149, 188, 0.2);
+  background: rgba(42, 51, 64, 0.84);
+  color: rgba(232, 240, 250, 0.9);
+  border-radius: 12px;
+}
+
+.pet-agents-meta-toggle {
+  margin-left: auto;
+  height: 24px;
+  padding: 0 8px;
+  font-size: 11px;
+}
+
+.pet-agents-bubble {
+  border-radius: 18px 18px 18px 8px;
+  padding: 12px 14px;
+  background: rgba(79, 101, 129, 0.34);
+  color: rgba(239, 245, 255, 0.94);
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.pet-agents-bubble.is-user {
+  border-radius: 18px 18px 8px 18px;
+  background: rgba(78, 121, 173, 0.5);
+}
+
+.pet-agents-bubble.is-pending {
+  opacity: 0.88;
+}
+
+.pet-agents-message-meta {
+  display: grid;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: 14px;
+  background: rgba(28, 36, 48, 0.78);
+  border: 1px solid rgba(114, 146, 181, 0.14);
+}
+
+.pet-agents-message-meta-line {
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr);
+  gap: 8px;
+  align-items: start;
+}
+
+.pet-agents-message-meta-label {
+  padding-top: 2px;
+  color: rgba(143, 177, 212, 0.78);
+  font-size: 12px;
+}
+
+.pet-agents-message-meta-values {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.pet-agents-message-meta-values span {
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: rgba(78, 98, 124, 0.52);
+  color: rgba(225, 236, 251, 0.84);
+  font-size: 11px;
+}
+
+.pet-agents-composer {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  flex: 0 0 auto;
+  gap: 0;
+  padding: 0;
+  background: transparent;
+}
+
+.pet-agents-toolbar-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.pet-agents-toolbar-group-actions {
+  justify-content: flex-end;
+}
+
+.pet-agents-toolbar-label {
+  font-size: 12px;
+  color: rgba(145, 162, 186, 0.72);
+}
+
+.pet-agents-pet-switch {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.pet-agents-segment-button,
+.pet-agents-toolbar-button,
+.pet-agents-popover-button,
+.pet-agents-overflow-action {
+  height: 34px;
+  padding: 0 12px;
+}
+
+.pet-agents-segment-button.is-active,
+.pet-agents-toolbar-button.is-active {
+  background: rgba(71, 108, 150, 0.9);
+  border-color: rgba(136, 182, 232, 0.42);
+}
+
+.pet-agents-toolbar-button.is-task-active {
+  background: rgba(57, 96, 138, 0.92);
+}
+
+.pet-agents-toolbar-icon {
+  width: 34px;
+  padding: 0;
+}
+
+.pet-agents-task-slot {
+  display: flex;
+  gap: 8px;
+}
+
+.pet-agents-settings-panel {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: calc(100% + 8px);
+  z-index: 3;
+  display: grid;
+  gap: 10px;
+  max-height: 0;
+  overflow: hidden;
+  opacity: 0;
+  transform: translateY(-8px);
+  transition:
+    max-height 220ms ease,
+    opacity 180ms ease,
+    transform 220ms ease,
+    margin-bottom 220ms ease,
+    padding 220ms ease,
+    border-color 220ms ease,
+    background-color 220ms ease;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 16px;
+  background: transparent;
+  pointer-events: none;
+  box-shadow: 0 12px 28px rgba(5, 8, 14, 0.18);
+}
+
+.pet-agents-settings-panel.is-expanded {
+  max-height: 240px;
+  opacity: 1;
+  transform: translateY(0);
+  margin-bottom: 8px;
+  padding: 10px;
+  border-color: rgba(111, 146, 184, 0.16);
+  background: rgba(14, 19, 28, 0.58);
+  backdrop-filter: blur(14px);
+  pointer-events: auto;
+}
+
+.pet-agents-settings-section {
+  display: grid;
+  gap: 8px;
+}
+
+.pet-agents-settings-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.pet-agents-settings-label {
+  font-size: 12px;
+  color: rgba(145, 162, 186, 0.72);
+}
+
+.pet-agents-popover-actions,
+.pet-agents-overflow-inline {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.pet-agents-input-shell {
+  position: relative;
+}
+
+.pet-agents-mention-popup {
+  position: absolute;
+  left: 0;
+  right: 44px;
+  bottom: calc(100% + 8px);
+  z-index: 4;
+  display: none;
+  gap: 8px;
+  padding: 10px;
+  border-radius: 16px;
+  border: 1px solid rgba(111, 146, 184, 0.18);
+  background: rgba(13, 18, 27, 0.92);
+  box-shadow: 0 14px 34px rgba(5, 8, 14, 0.24);
+  backdrop-filter: blur(16px);
+}
+
+.pet-agents-mention-popup.is-open {
+  display: grid;
+}
+
+.pet-agents-mention-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  color: rgba(176, 194, 218, 0.72);
+  font-size: 12px;
+}
+
+.pet-agents-mention-list {
+  display: grid;
+  gap: 6px;
+}
+
+.pet-agents-mention-option {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr);
+  gap: 10px;
+  align-items: center;
+  width: 100%;
+  padding: 8px 10px;
+  border-radius: 12px;
+  border: 1px solid rgba(113, 149, 188, 0.16);
+  background: rgba(42, 51, 64, 0.46);
+  color: rgba(232, 240, 250, 0.92);
+  text-align: left;
+}
+
+.pet-agents-mention-option.is-selected {
+  border-color: rgba(136, 182, 232, 0.42);
+  background: rgba(71, 108, 150, 0.42);
+}
+
+.pet-agents-mention-avatar {
+  width: 24px;
+  height: 24px;
+  border-radius: 8px;
+  object-fit: cover;
+}
+
+.pet-agents-mention-copy {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.pet-agents-mention-name {
+  color: rgba(244, 248, 255, 0.94);
+  font-size: 13px;
+}
+
+.pet-agents-mention-role {
+  color: rgba(176, 194, 218, 0.68);
+  font-size: 11px;
+}
+
+.pet-agents-input {
+  width: 100%;
+  min-height: 72px;
+  resize: vertical;
+  padding: 12px 42px 10px 12px;
+  border-radius: 18px;
+  border: 1px solid rgba(93, 122, 155, 0.22);
+  background: rgba(23, 28, 35, 0.96);
+  color: rgba(236, 243, 252, 0.94);
+  line-height: 1.6;
+}
+
+.pet-agents-input::placeholder {
+  color: rgba(126, 142, 163, 0.72);
+}
+
+.pet-agents-input:focus {
+  outline: none;
+  border-color: rgba(106, 160, 219, 0.48);
+  box-shadow: 0 0 0 1px rgba(98, 153, 214, 0.16);
+}
+
+.pet-agents-composer-toggle {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  width: 28px;
+  height: 28px;
+  border-radius: 10px;
+  display: grid;
+  place-items: center;
+  font-size: 14px;
+  line-height: 1;
+  transition:
+    background-color 160ms ease,
+    border-color 160ms ease,
+    transform 180ms ease;
+}
+
+.pet-agents-composer-toggle.is-active {
+  background: rgba(71, 108, 150, 0.9);
+  border-color: rgba(136, 182, 232, 0.42);
+  transform: rotate(90deg);
+}
+
+.pet-agents-composer-toggle:disabled,
+.pet-agents-toolbar-button:disabled,
+.pet-agents-segment-button:disabled {
+  opacity: 0.48;
+}
+
+@media (max-width: 760px) {
+  .pet-agents-shell {
+    gap: 8px;
+    padding: 8px 10px 1px;
+  }
+
+  .pet-agents-header-pet {
+    width: 62px;
+    height: 62px;
+    border-radius: 16px;
+  }
+
+  .pet-agents-header-sprite {
+    width: 40px;
+    height: 40px;
+  }
+
+  .pet-agents-header-detail-top {
+    flex-direction: column;
+  }
+
+  .pet-agents-status-top {
+    align-items: flex-start;
+  }
+
+  .pet-agents-bubble-wrap {
+    max-width: 100%;
+  }
+}
+
+@media (max-width: 430px) {
+  .pet-agents-header-pets {
+    justify-content: space-between;
+  }
+
+  .pet-agents-header-pet {
+    width: 56px;
+    height: 56px;
+  }
+}
