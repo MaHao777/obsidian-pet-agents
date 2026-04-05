@@ -31,7 +31,8 @@ var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: tru
 // src/main.ts
 var main_exports = {};
 __export(main_exports, {
-  default: () => PetAgentsPlugin
+  default: () => PetAgentsPlugin,
+  providerLabel: () => providerLabel
 });
 module.exports = __toCommonJS(main_exports);
 var import_obsidian3 = require("obsidian");
@@ -1698,6 +1699,209 @@ function detectMentionedPets(text) {
   return Array.from(mentioned);
 }
 
+// src/provider-api.ts
+var AnthropicApiProvider = class {
+  constructor(getOptions) {
+    this.getOptions = getOptions;
+  }
+  async healthCheck() {
+    return {
+      ok: false,
+      error: "Anthropic API \u5C1A\u672A\u5B9E\u73B0\uFF0C\u656C\u8BF7\u671F\u5F85\u3002"
+    };
+  }
+  async runTurn(_request, _onEvent) {
+    throw new Error("Anthropic API \u5C1A\u672A\u5B9E\u73B0\u3002");
+  }
+  cancelTurn(_requestId) {
+  }
+};
+
+// src/provider-utils.ts
+function getRequire() {
+  const scopedWindow = window;
+  if (typeof scopedWindow.require === "function") {
+    return scopedWindow.require;
+  }
+  return require;
+}
+function childProcess() {
+  return getRequire()("child_process");
+}
+function isWindowsShell() {
+  return navigator.userAgent.toLowerCase().includes("windows");
+}
+function spawnCli(command, args, cwd) {
+  return childProcess().spawn(command, args, {
+    cwd,
+    shell: isWindowsShell()
+  });
+}
+function execCli(command, args) {
+  return new Promise((resolve, reject) => {
+    childProcess().execFile(command, args, { shell: isWindowsShell() }, (error, stdout, stderr) => {
+      if (error) {
+        reject(error);
+        return;
+      }
+      resolve((stdout || stderr).trim());
+    });
+  });
+}
+
+// src/provider-claude.ts
+function buildClaudeTurnArgs(options, request) {
+  const args = ["--print", "--output-format", "stream-json", "--max-turns", "1"];
+  const effectiveModel = request.model?.trim() || options.model.trim();
+  if (effectiveModel) {
+    args.push("--model", effectiveModel);
+  }
+  if (request.sessionId) {
+    args.push("--resume", request.sessionId);
+  }
+  return args;
+}
+var ClaudeCodeProvider = class {
+  constructor(getOptions) {
+    this.getOptions = getOptions;
+    this.runningTurns = /* @__PURE__ */ new Map();
+  }
+  async healthCheck() {
+    const options = this.getOptions();
+    try {
+      const version = await execCli(options.executable, ["--version"]);
+      return {
+        ok: true,
+        version,
+        loginStatus: "ok"
+      };
+    } catch (error) {
+      return {
+        ok: false,
+        error: error instanceof Error ? error.message : String(error)
+      };
+    }
+  }
+  async runTurn(request, onEvent) {
+    const options = this.getOptions();
+    const args = buildClaudeTurnArgs(options, request);
+    const child = spawnCli(options.executable, args, request.cwd);
+    this.runningTurns.set(request.requestId, child);
+    child.stdin.write(request.prompt);
+    child.stdin.end();
+    return await new Promise((resolve, reject) => {
+      let stdoutBuffer = "";
+      let stderrBuffer = "";
+      let collectedText = "";
+      let sessionId = request.sessionId;
+      const stderrLines = [];
+      const flushStdout = () => {
+        const lines = stdoutBuffer.split(/\r?\n/);
+        stdoutBuffer = lines.pop() ?? "";
+        lines.forEach((line) => {
+          if (!line.trim()) {
+            return;
+          }
+          try {
+            const event = JSON.parse(line);
+            switch (event.type) {
+              case "system": {
+                const sid = event.session_id ?? event.conversation_id;
+                if (typeof sid === "string") {
+                  sessionId = sid;
+                  onEvent?.({ type: "thread-started", threadId: sid, raw: event });
+                }
+                break;
+              }
+              case "assistant": {
+                const msgContent = event.message?.content;
+                if (Array.isArray(msgContent)) {
+                  const textBlock = msgContent.find((block) => block.type === "text");
+                  if (textBlock?.text) {
+                    collectedText = textBlock.text;
+                    onEvent?.({ type: "message", text: collectedText, raw: event });
+                  }
+                }
+                break;
+              }
+              case "content_block_delta": {
+                const deltaText = event.content_block_delta?.delta?.text ?? event.delta?.text;
+                if (deltaText) {
+                  collectedText += deltaText;
+                  onEvent?.({ type: "message-delta", text: deltaText, raw: event });
+                }
+                break;
+              }
+              case "result": {
+                if (event.result?.session_id) {
+                  sessionId = event.result.session_id;
+                }
+                if (event.result?.text) {
+                  collectedText = event.result.text;
+                  onEvent?.({ type: "message", text: collectedText, raw: event });
+                }
+                onEvent?.({ type: "turn-completed", raw: event });
+                break;
+              }
+              default:
+                break;
+            }
+          } catch {
+            onEvent?.({ type: "stderr", text: line, raw: line });
+          }
+        });
+      };
+      const flushStderr = () => {
+        const lines = stderrBuffer.split(/\r?\n/);
+        stderrBuffer = lines.pop() ?? "";
+        lines.forEach((line) => {
+          if (!line.trim()) {
+            return;
+          }
+          stderrLines.push(line);
+          onEvent?.({ type: "stderr", text: line, raw: line });
+        });
+      };
+      child.stdout.setEncoding("utf8");
+      child.stderr.setEncoding("utf8");
+      child.stdout.on("data", (chunk) => {
+        stdoutBuffer += chunk;
+        flushStdout();
+      });
+      child.stderr.on("data", (chunk) => {
+        stderrBuffer += chunk;
+        flushStderr();
+      });
+      child.on("error", (error) => {
+        this.runningTurns.delete(request.requestId);
+        reject(error);
+      });
+      child.on("close", (code) => {
+        flushStdout();
+        flushStderr();
+        this.runningTurns.delete(request.requestId);
+        if (code === 0) {
+          resolve({
+            sessionId,
+            text: collectedText.trim(),
+            stderr: stderrLines
+          });
+          return;
+        }
+        reject(new Error(stderrLines.join("\n") || `Claude Code exited with code ${code ?? "unknown"}`));
+      });
+    });
+  }
+  cancelTurn(requestId) {
+    const child = this.runningTurns.get(requestId);
+    if (!child) {
+      return;
+    }
+    child.kill();
+    this.runningTurns.delete(requestId);
+  }
+};
+
 // src/prompt-store.ts
 var PET_PROMPT_FOLDER = "Pet Agents/Prompts";
 var PET_PROMPT_FILE_PATHS = {
@@ -1852,19 +2056,6 @@ function resolveExecutionPolicy(mode, requestedPolicy) {
 }
 
 // src/provider.ts
-function getRequire() {
-  const scopedWindow = window;
-  if (typeof scopedWindow.require === "function") {
-    return scopedWindow.require;
-  }
-  return require;
-}
-function childProcess() {
-  return getRequire()("child_process");
-}
-function isWindowsShell() {
-  return navigator.userAgent.toLowerCase().includes("windows");
-}
 function pushRootArgs(args, options, request) {
   if (options.profile.trim()) {
     args.push("--profile", options.profile.trim());
@@ -1907,23 +2098,6 @@ function buildCodexTurnArgs(options, request) {
   args.push("-");
   return args;
 }
-function spawnCodex(command, args, cwd) {
-  return childProcess().spawn(command, args, {
-    cwd,
-    shell: isWindowsShell()
-  });
-}
-function execCodex(command, args) {
-  return new Promise((resolve, reject) => {
-    childProcess().execFile(command, args, { shell: isWindowsShell() }, (error, stdout, stderr) => {
-      if (error) {
-        reject(error);
-        return;
-      }
-      resolve((stdout || stderr).trim());
-    });
-  });
-}
 var CodexCliProvider = class {
   constructor(getOptions) {
     this.getOptions = getOptions;
@@ -1932,8 +2106,8 @@ var CodexCliProvider = class {
   async healthCheck() {
     const options = this.getOptions();
     try {
-      const version = await execCodex(options.executable, ["--version"]);
-      const loginStatus = await execCodex(options.executable, ["login", "status"]);
+      const version = await execCli(options.executable, ["--version"]);
+      const loginStatus = await execCli(options.executable, ["login", "status"]);
       return {
         ok: true,
         version,
@@ -1949,7 +2123,7 @@ var CodexCliProvider = class {
   async runTurn(request, onEvent) {
     const options = this.getOptions();
     const args = buildCodexTurnArgs(options, request);
-    const child = spawnCodex(options.executable, args, request.cwd);
+    const child = spawnCli(options.executable, args, request.cwd);
     this.runningTurns.set(request.requestId, child);
     child.stdin.write(request.prompt);
     child.stdin.end();
@@ -2058,6 +2232,10 @@ var DEFAULT_SETTINGS = {
   codexExecutable: "codex",
   codexModel: "",
   codexProfile: "",
+  claudeExecutable: "claude",
+  claudeModel: "",
+  anthropicApiKey: "",
+  anthropicApiModel: "",
   petRuntimeSettings: createDefaultPetRuntimeSettings(),
   taskExecutionPolicy: "danger-full-access",
   taskModeConfirmation: false,
@@ -2127,18 +2305,49 @@ var PetAgentsSettingTab = class extends import_obsidian.PluginSettingTab {
         await this.plugin.reloadPromptFiles(true);
       })
     );
-    new import_obsidian.Setting(containerEl).setName("Codex \u53EF\u6267\u884C\u6587\u4EF6").setDesc("\u9ED8\u8BA4\u76F4\u63A5\u8C03\u7528 `codex`\u3002\u5982\u679C\u4F60\u653E\u5728\u4E86\u522B\u7684\u8DEF\u5F84\uFF0C\u53EF\u4EE5\u5728\u8FD9\u91CC\u8986\u76D6\u3002").addText(
-      (text) => text.setPlaceholder("codex").setValue(this.plugin.settings.codexExecutable).onChange(async (value) => {
-        this.plugin.settings.codexExecutable = value.trim() || "codex";
-        await this.plugin.persistState();
-      })
-    );
-    new import_obsidian.Setting(containerEl).setName("Codex Profile").setDesc("\u5BF9\u5E94 `codex --profile`\u3002").addText(
-      (text) => text.setValue(this.plugin.settings.codexProfile).onChange(async (value) => {
-        this.plugin.settings.codexProfile = value.trim();
-        await this.plugin.persistState();
-      })
-    );
+    new import_obsidian.Setting(containerEl).setName("\u8C03\u7528\u65B9\u5F0F").setDesc("\u9009\u62E9\u7528\u54EA\u4E2A\u540E\u7AEF\u548C\u5BA0\u7269\u804A\u5929\u3002").addDropdown((dropdown) => {
+      ["codex-cli", "claude-code", "anthropic-api"].forEach(
+        (kind) => dropdown.addOption(kind, providerLabel(kind))
+      );
+      dropdown.setValue(this.plugin.settings.providerKind).onChange(async (value) => {
+        await this.plugin.switchProvider(value);
+        this.display();
+      });
+    });
+    if (this.plugin.settings.providerKind === "codex-cli") {
+      new import_obsidian.Setting(containerEl).setName("Codex \u53EF\u6267\u884C\u6587\u4EF6").setDesc("\u9ED8\u8BA4\u76F4\u63A5\u8C03\u7528 `codex`\u3002\u5982\u679C\u4F60\u653E\u5728\u4E86\u522B\u7684\u8DEF\u5F84\uFF0C\u53EF\u4EE5\u5728\u8FD9\u91CC\u8986\u76D6\u3002").addText(
+        (text) => text.setPlaceholder("codex").setValue(this.plugin.settings.codexExecutable).onChange(async (value) => {
+          this.plugin.settings.codexExecutable = value.trim() || "codex";
+          await this.plugin.persistState();
+        })
+      );
+      new import_obsidian.Setting(containerEl).setName("Codex Profile").setDesc("\u5BF9\u5E94 `codex --profile`\u3002").addText(
+        (text) => text.setValue(this.plugin.settings.codexProfile).onChange(async (value) => {
+          this.plugin.settings.codexProfile = value.trim();
+          await this.plugin.persistState();
+        })
+      );
+    }
+    if (this.plugin.settings.providerKind === "claude-code") {
+      new import_obsidian.Setting(containerEl).setName("Claude \u53EF\u6267\u884C\u6587\u4EF6").setDesc("\u9ED8\u8BA4\u76F4\u63A5\u8C03\u7528 `claude`\u3002\u5982\u679C\u4F60\u653E\u5728\u4E86\u522B\u7684\u8DEF\u5F84\uFF0C\u53EF\u4EE5\u5728\u8FD9\u91CC\u6539\u3002").addText(
+        (text) => text.setPlaceholder("claude").setValue(this.plugin.settings.claudeExecutable).onChange(async (value) => {
+          this.plugin.settings.claudeExecutable = value.trim() || "claude";
+          await this.plugin.persistState();
+        })
+      );
+      new import_obsidian.Setting(containerEl).setName("Claude \u6A21\u578B").setDesc("\u7559\u7A7A\u4F7F\u7528 Claude Code \u9ED8\u8BA4\u6A21\u578B\u3002").addText(
+        (text) => text.setPlaceholder("claude-sonnet-4-20250514").setValue(this.plugin.settings.claudeModel).onChange(async (value) => {
+          this.plugin.settings.claudeModel = value.trim();
+          await this.plugin.persistState();
+        })
+      );
+    }
+    if (this.plugin.settings.providerKind === "anthropic-api") {
+      containerEl.createEl("p", {
+        cls: "setting-item-description",
+        text: "Anthropic API \u540E\u7AEF\u5C1A\u672A\u5B9E\u73B0\uFF0C\u656C\u8BF7\u671F\u5F85\u3002\u540E\u7EED\u7248\u672C\u5C06\u652F\u6301\u76F4\u63A5\u8C03\u7528 Anthropic Messages API\u3002"
+      });
+    }
     containerEl.createEl("h3", { text: "\u5BA0\u7269\u6A21\u578B\u4E0E\u601D\u8003\u5F3A\u5EA6" });
     PET_PROFILES.forEach((profile) => {
       const runtimeSettings = this.plugin.settings.petRuntimeSettings[profile.id];
@@ -2721,6 +2930,7 @@ var PetAgentsView = class extends import_obsidian2.ItemView {
     this.composerSettingsExpanded = false;
     this.expandedMessageMetaIds = /* @__PURE__ */ new Set();
     this.isPinnedToBottom = true;
+    this.providerButtons = /* @__PURE__ */ new Map();
     this.petButtons = /* @__PURE__ */ new Map();
     this.composerAttachments = [];
     this.mentionSuggestions = [];
@@ -2786,6 +2996,24 @@ var PetAgentsView = class extends import_obsidian2.ItemView {
     this.inputShellEl = this.composerEl.createDiv({ cls: "pet-agents-input-shell" });
     this.settingsPanelEl = this.inputShellEl.createDiv({ cls: "pet-agents-settings-panel" });
     this.settingsSummaryEl = this.settingsPanelEl.createDiv({ cls: "pet-agents-settings-summary" });
+    const providerSection = this.settingsPanelEl.createDiv({ cls: "pet-agents-settings-section" });
+    const providerHead = providerSection.createDiv({ cls: "pet-agents-settings-head" });
+    providerHead.createSpan({ cls: "pet-agents-settings-label", text: "\u8C03\u7528\u65B9\u5F0F" });
+    this.providerSwitchEl = providerSection.createDiv({ cls: "pet-agents-pet-switch" });
+    const providerKinds = [
+      { kind: "codex-cli", label: "Codex" },
+      { kind: "claude-code", label: "Claude" },
+      { kind: "anthropic-api", label: "API" }
+    ];
+    providerKinds.forEach(({ kind, label }) => {
+      const button = this.providerSwitchEl.createEl("button", {
+        cls: "pet-agents-segment-button",
+        text: label
+      });
+      button.type = "button";
+      button.onclick = () => void this.plugin.switchProvider(kind);
+      this.providerButtons.set(kind, button);
+    });
     const mainPetSection = this.settingsPanelEl.createDiv({ cls: "pet-agents-settings-section" });
     const petHead = mainPetSection.createDiv({ cls: "pet-agents-settings-head" });
     petHead.createSpan({ cls: "pet-agents-settings-label", text: "\u4E3B\u8BB2\u5BA0\u7269" });
@@ -3020,8 +3248,9 @@ var PetAgentsView = class extends import_obsidian2.ItemView {
     }
     const detailCopy = detailEl.createDiv({ cls: "pet-agents-header-detail-copy" });
     detailCopy.createDiv({ text: profile.description });
+    const currentProviderLabel = providerLabel(this.plugin.settings.providerKind);
     detailCopy.createDiv({
-      text: runtime.providerHealth?.ok ? "Codex \u5DF2\u8FDE\u63A5" : "Codex \u8FDE\u63A5\u5F02\u5E38"
+      text: runtime.providerHealth?.ok ? `${currentProviderLabel} \u5DF2\u8FDE\u63A5` : `${currentProviderLabel} \u8FDE\u63A5\u5F02\u5E38`
     });
     detailCopy.createDiv({
       text: thread.engineerTaskMode && profile.id === "engineer-mole" ? "\u6A21\u5F0F\uFF1A\u4EFB\u52A1" : "\u6A21\u5F0F\uFF1A\u804A\u5929"
@@ -3315,6 +3544,10 @@ var PetAgentsView = class extends import_obsidian2.ItemView {
     this.renderAttachmentChips();
     this.renderSelectionContext();
     this.composerHeaderEl.toggleClass("is-hidden", !this.selectedContext && this.composerAttachments.length === 0);
+    this.providerButtons.forEach((button, kind) => {
+      button.classList.toggle("is-active", this.plugin.settings.providerKind === kind);
+      button.disabled = runtime.isBusy;
+    });
     this.petButtons.forEach((button, petId) => {
       button.classList.toggle("is-active", thread.currentPetId === petId);
       button.disabled = runtime.isBusy;
@@ -3913,6 +4146,16 @@ function clip4(text, maxLength) {
 function normalizeVaultPath3(path2) {
   return path2.replace(/\\/g, "/").replace(/\/+/g, "/").replace(/^\/+/, "").replace(/\/+$/, "");
 }
+function providerLabel(kind) {
+  switch (kind) {
+    case "codex-cli":
+      return "Codex CLI";
+    case "claude-code":
+      return "Claude Code";
+    case "anthropic-api":
+      return "Anthropic API";
+  }
+}
 function createDefaultThread() {
   return {
     id: DEFAULT_THREAD_ID,
@@ -3969,16 +4212,13 @@ var PetAgentsPlugin = class extends import_obsidian3.Plugin {
       statusText: "\u7B49\u5F85\u8F93\u5165",
       petStates: initialPetStates()
     };
-    this.provider = new CodexCliProvider(() => ({
-      executable: this.settings.codexExecutable,
-      model: this.settings.codexModel,
-      profile: this.settings.codexProfile
-    }));
+    this.provider = this.createProvider(DEFAULT_SETTINGS.providerKind);
     this.listeners = /* @__PURE__ */ new Set();
     this.persistTimer = null;
   }
   async onload() {
     await this.loadPluginState();
+    this.provider = this.createProvider(this.settings.providerKind);
     this.promptStore = new PetPromptStore(this);
     await this.promptStore.initialize();
     this.memoryService = new LayeredMemoryService(this, this.pluginData.memory);
@@ -4195,6 +4435,38 @@ var PetAgentsPlugin = class extends import_obsidian3.Plugin {
       new import_obsidian3.Notice("\u8BB0\u5FC6\u56FE\u8C31\u5DF2\u5237\u65B0\u3002");
     }
   }
+  createProvider(kind) {
+    switch (kind) {
+      case "codex-cli":
+        return new CodexCliProvider(() => ({
+          executable: this.settings.codexExecutable,
+          model: this.settings.codexModel,
+          profile: this.settings.codexProfile
+        }));
+      case "claude-code":
+        return new ClaudeCodeProvider(() => ({
+          executable: this.settings.claudeExecutable,
+          model: this.settings.claudeModel
+        }));
+      case "anthropic-api":
+        return new AnthropicApiProvider(() => ({
+          apiKey: this.settings.anthropicApiKey,
+          model: this.settings.anthropicApiModel
+        }));
+    }
+  }
+  async switchProvider(kind) {
+    this.settings.providerKind = kind;
+    this.provider = this.createProvider(kind);
+    const thread = this.getActiveThread();
+    thread.petSessions = {};
+    this.runtimeState.providerHealth = void 0;
+    this.runtimeState.providerHealthCheckedAt = void 0;
+    this.runtimeState.statusText = `\u5DF2\u5207\u6362\u5230 ${providerLabel(kind)}\u3002`;
+    this.schedulePersist();
+    this.refreshViews();
+    await this.refreshProviderHealth();
+  }
   async sendUserMessage(input) {
     if (this.runtimeState.isBusy) {
       new import_obsidian3.Notice("\u5F53\u524D\u8FD8\u6709\u4E00\u8F6E\u5BF9\u8BDD\u5728\u5904\u7406\u4E2D\u3002");
@@ -4202,7 +4474,7 @@ var PetAgentsPlugin = class extends import_obsidian3.Plugin {
     }
     await this.ensureProviderHealth();
     if (!this.runtimeState.providerHealth?.ok) {
-      new import_obsidian3.Notice(this.runtimeState.providerHealth?.error ?? "Codex \u4E0D\u53EF\u7528\u3002");
+      new import_obsidian3.Notice(this.runtimeState.providerHealth?.error ?? `${providerLabel(this.settings.providerKind)} \u4E0D\u53EF\u7528\u3002`);
       this.refreshViews();
       return;
     }
@@ -4486,7 +4758,7 @@ ${primaryReply}`,
     const adapter = this.app.vault.adapter;
     const basePath = adapter.getBasePath?.() ?? adapter.basePath;
     if (!basePath) {
-      throw new Error("\u5F53\u524D vault \u4E0D\u662F\u672C\u5730\u684C\u9762\u4ED3\u5E93\uFF0C\u65E0\u6CD5\u8C03\u7528\u672C\u5730 Codex\u3002");
+      throw new Error("\u5F53\u524D vault \u4E0D\u662F\u672C\u5730\u684C\u9762\u4ED3\u5E93\uFF0C\u65E0\u6CD5\u8C03\u7528\u672C\u673A Provider\u3002");
     }
     return basePath;
   }

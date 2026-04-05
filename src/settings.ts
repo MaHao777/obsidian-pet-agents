@@ -1,7 +1,8 @@
 import { App, PluginSettingTab, Setting } from "obsidian";
 
+import { providerLabel } from "./main";
 import { createDefaultPetRuntimeSettings, normalizePetRuntimeSettings, PET_PROFILES, reasoningEffortLabel } from "./pets";
-import type { PetAgentsSettings, TaskExecutionPolicy } from "./types";
+import type { PetAgentsSettings, ProviderKind, TaskExecutionPolicy } from "./types";
 import type PetAgentsPlugin from "./main";
 
 export const DEFAULT_SETTINGS: PetAgentsSettings = {
@@ -9,6 +10,10 @@ export const DEFAULT_SETTINGS: PetAgentsSettings = {
   codexExecutable: "codex",
   codexModel: "",
   codexProfile: "",
+  claudeExecutable: "claude",
+  claudeModel: "",
+  anthropicApiKey: "",
+  anthropicApiModel: "",
   petRuntimeSettings: createDefaultPetRuntimeSettings(),
   taskExecutionPolicy: "danger-full-access",
   taskModeConfirmation: false,
@@ -113,27 +118,78 @@ export class PetAgentsSettingTab extends PluginSettingTab {
       );
 
     new Setting(containerEl)
-      .setName("Codex 可执行文件")
-      .setDesc("默认直接调用 `codex`。如果你放在了别的路径，可以在这里覆盖。")
-      .addText((text) =>
-        text
-          .setPlaceholder("codex")
-          .setValue(this.plugin.settings.codexExecutable)
-          .onChange(async (value) => {
-            this.plugin.settings.codexExecutable = value.trim() || "codex";
+      .setName("调用方式")
+      .setDesc("选择用哪个后端和宠物聊天。")
+      .addDropdown((dropdown) => {
+        (["codex-cli", "claude-code", "anthropic-api"] as ProviderKind[]).forEach((kind) =>
+          dropdown.addOption(kind, providerLabel(kind)),
+        );
+
+        dropdown.setValue(this.plugin.settings.providerKind).onChange(async (value) => {
+          await this.plugin.switchProvider(value as ProviderKind);
+          this.display();
+        });
+      });
+
+    if (this.plugin.settings.providerKind === "codex-cli") {
+      new Setting(containerEl)
+        .setName("Codex 可执行文件")
+        .setDesc("默认直接调用 `codex`。如果你放在了别的路径，可以在这里覆盖。")
+        .addText((text) =>
+          text
+            .setPlaceholder("codex")
+            .setValue(this.plugin.settings.codexExecutable)
+            .onChange(async (value) => {
+              this.plugin.settings.codexExecutable = value.trim() || "codex";
+              await this.plugin.persistState();
+            }),
+        );
+
+      new Setting(containerEl)
+        .setName("Codex Profile")
+        .setDesc("对应 `codex --profile`。")
+        .addText((text) =>
+          text.setValue(this.plugin.settings.codexProfile).onChange(async (value) => {
+            this.plugin.settings.codexProfile = value.trim();
             await this.plugin.persistState();
           }),
-      );
+        );
+    }
 
-    new Setting(containerEl)
-      .setName("Codex Profile")
-      .setDesc("对应 `codex --profile`。")
-      .addText((text) =>
-        text.setValue(this.plugin.settings.codexProfile).onChange(async (value) => {
-          this.plugin.settings.codexProfile = value.trim();
-          await this.plugin.persistState();
-        }),
-      );
+    if (this.plugin.settings.providerKind === "claude-code") {
+      new Setting(containerEl)
+        .setName("Claude 可执行文件")
+        .setDesc("默认直接调用 `claude`。如果你放在了别的路径，可以在这里改。")
+        .addText((text) =>
+          text
+            .setPlaceholder("claude")
+            .setValue(this.plugin.settings.claudeExecutable)
+            .onChange(async (value) => {
+              this.plugin.settings.claudeExecutable = value.trim() || "claude";
+              await this.plugin.persistState();
+            }),
+        );
+
+      new Setting(containerEl)
+        .setName("Claude 模型")
+        .setDesc("留空使用 Claude Code 默认模型。")
+        .addText((text) =>
+          text
+            .setPlaceholder("claude-sonnet-4-20250514")
+            .setValue(this.plugin.settings.claudeModel)
+            .onChange(async (value) => {
+              this.plugin.settings.claudeModel = value.trim();
+              await this.plugin.persistState();
+            }),
+        );
+    }
+
+    if (this.plugin.settings.providerKind === "anthropic-api") {
+      containerEl.createEl("p", {
+        cls: "setting-item-description",
+        text: "Anthropic API 后端尚未实现，敬请期待。后续版本将支持直接调用 Anthropic Messages API。",
+      });
+    }
 
     containerEl.createEl("h3", { text: "宠物模型与思考强度" });
 

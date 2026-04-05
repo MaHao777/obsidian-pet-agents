@@ -10,6 +10,8 @@ export type PetReasoningEffort = "low" | "medium" | "high" | "xhigh";
 
 export type TaskExecutionPolicy = "read-only" | "workspace-write" | "danger-full-access";
 
+export type ProviderKind = "codex-cli" | "claude-code" | "anthropic-api";
+
 export type PetVisualState = "idle" | "thinking" | "speaking" | "error";
 export type {
   MemoryContext,
@@ -98,10 +100,14 @@ export interface PetRuntimeSetting {
 export type PetRuntimeSettings = Record<PetAgentId, PetRuntimeSetting>;
 
 export interface PetAgentsSettings {
-  providerKind: "codex-cli";
+  providerKind: ProviderKind;
   codexExecutable: string;
   codexModel: string;
   codexProfile: string;
+  claudeExecutable: string;
+  claudeModel: string;
+  anthropicApiKey: string;
+  anthropicApiModel: string;
   petRuntimeSettings: PetRuntimeSettings;
   taskExecutionPolicy: TaskExecutionPolicy;
   taskModeConfirmation: boolean;

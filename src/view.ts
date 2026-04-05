@@ -31,10 +31,11 @@ import {
   PET_PROFILES,
   reasoningEffortLabel,
 } from "./pets";
+import { providerLabel } from "./main";
 import { computeProfilePopoverPosition, shouldHideProfilePopover } from "./profile-popover";
 import { discoverSkills, type DiscoveredSkill } from "./skills";
 import type PetAgentsPlugin from "./main";
-import type { ChatMessage, ComposerAttachment, PetAgentId, SkillAttachment } from "./types";
+import type { ChatMessage, ComposerAttachment, PetAgentId, ProviderKind, SkillAttachment } from "./types";
 
 export const PET_AGENTS_VIEW_TYPE = "obs-pet-agents-view";
 
@@ -132,6 +133,8 @@ export class PetAgentsView extends ItemView {
   private composerEl!: HTMLDivElement;
   private settingsPanelEl!: HTMLDivElement;
   private settingsSummaryEl!: HTMLDivElement;
+  private providerSwitchEl!: HTMLDivElement;
+  private providerButtons = new Map<ProviderKind, HTMLButtonElement>();
   private petSwitchEl!: HTMLDivElement;
   private mentionActionsEl!: HTMLDivElement;
   private taskSlotEl!: HTMLDivElement;
@@ -223,6 +226,25 @@ export class PetAgentsView extends ItemView {
     this.inputShellEl = this.composerEl.createDiv({ cls: "pet-agents-input-shell" });
     this.settingsPanelEl = this.inputShellEl.createDiv({ cls: "pet-agents-settings-panel" });
     this.settingsSummaryEl = this.settingsPanelEl.createDiv({ cls: "pet-agents-settings-summary" });
+
+    const providerSection = this.settingsPanelEl.createDiv({ cls: "pet-agents-settings-section" });
+    const providerHead = providerSection.createDiv({ cls: "pet-agents-settings-head" });
+    providerHead.createSpan({ cls: "pet-agents-settings-label", text: "调用方式" });
+    this.providerSwitchEl = providerSection.createDiv({ cls: "pet-agents-pet-switch" });
+    const providerKinds: Array<{ kind: ProviderKind; label: string }> = [
+      { kind: "codex-cli", label: "Codex" },
+      { kind: "claude-code", label: "Claude" },
+      { kind: "anthropic-api", label: "API" },
+    ];
+    providerKinds.forEach(({ kind, label }) => {
+      const button = this.providerSwitchEl.createEl("button", {
+        cls: "pet-agents-segment-button",
+        text: label,
+      });
+      button.type = "button";
+      button.onclick = () => void this.plugin.switchProvider(kind);
+      this.providerButtons.set(kind, button);
+    });
 
     const mainPetSection = this.settingsPanelEl.createDiv({ cls: "pet-agents-settings-section" });
     const petHead = mainPetSection.createDiv({ cls: "pet-agents-settings-head" });
@@ -492,8 +514,9 @@ export class PetAgentsView extends ItemView {
 
     const detailCopy = detailEl.createDiv({ cls: "pet-agents-header-detail-copy" });
     detailCopy.createDiv({ text: profile.description });
+    const currentProviderLabel = providerLabel(this.plugin.settings.providerKind);
     detailCopy.createDiv({
-      text: runtime.providerHealth?.ok ? "Codex 已连接" : "Codex 连接异常",
+      text: runtime.providerHealth?.ok ? `${currentProviderLabel} 已连接` : `${currentProviderLabel} 连接异常`,
     });
     detailCopy.createDiv({
       text: thread.engineerTaskMode && profile.id === "engineer-mole" ? "模式：任务" : "模式：聊天",
@@ -834,6 +857,11 @@ export class PetAgentsView extends ItemView {
     this.renderAttachmentChips();
     this.renderSelectionContext();
     this.composerHeaderEl.toggleClass("is-hidden", !this.selectedContext && this.composerAttachments.length === 0);
+
+    this.providerButtons.forEach((button, kind) => {
+      button.classList.toggle("is-active", this.plugin.settings.providerKind === kind);
+      button.disabled = runtime.isBusy;
+    });
 
     this.petButtons.forEach((button, petId) => {
       button.classList.toggle("is-active", thread.currentPetId === petId);

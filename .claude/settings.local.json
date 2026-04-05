@@ -6,7 +6,9 @@
       "Bash(cp \"D:\\\\VS_project\\\\OBS_PetAgents\\\\manifest.json\" \"D:\\\\ObsidianData\\\\Note\\\\.obsidian\\\\plugins\\\\obs-pet-agents\\\\manifest.json\")",
       "Bash(cp \"D:\\\\VS_project\\\\OBS_PetAgents\\\\versions.json\" \"D:\\\\ObsidianData\\\\Note\\\\.obsidian\\\\plugins\\\\obs-pet-agents\\\\versions.json\")",
       "Bash(obsidian reload:*)",
-      "Bash(obsidian plugin:reload id=obs-pet-agents vault=Note)"
+      "Bash(obsidian plugin:reload id=obs-pet-agents vault=Note)",
+      "Bash(npm run:*)",
+      "Bash(GIT_EDITOR=true git rebase --continue)"
     ]
   }
 }

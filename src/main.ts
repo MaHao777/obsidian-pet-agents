@@ -3,6 +3,8 @@ import { Notice, Plugin, TAbstractFile, TFile } from "obsidian";
 import { type MemoryGitChangeSet, LayeredMemoryService } from "./memory";
 import { buildMemoryExtractionPrompt, parseMemoryExtractionResponse, type MemoryExtractionAtom } from "./memory-extraction";
 import { detectMentionedPets, getPetProfile, getPetRuntimeSettings } from "./pets";
+import { AnthropicApiProvider } from "./provider-api";
+import { ClaudeCodeProvider } from "./provider-claude";
 import { getPetPromptFilePath, PetPromptStore } from "./prompt-store";
 import { CodexCliProvider } from "./provider";
 import { DEFAULT_SETTINGS, normalizeLoadedSettings, PetAgentsSettingTab } from "./settings";
@@ -16,7 +18,9 @@ import type {
   PetAgentsPluginData,
   PetAgentsSettings,
   PetVisualState,
+  ProviderAdapter,
   ProviderHealth,
+  ProviderKind,
 } from "./types";
 import { PET_AGENTS_VIEW_TYPE, PetAgentsView } from "./view";
 
@@ -71,6 +75,17 @@ function clip(text: string, maxLength: number): string {
 
 function normalizeVaultPath(path: string): string {
   return path.replace(/\\/g, "/").replace(/\/+/g, "/").replace(/^\/+/, "").replace(/\/+$/, "");
+}
+
+export function providerLabel(kind: ProviderKind): string {
+  switch (kind) {
+    case "codex-cli":
+      return "Codex CLI";
+    case "claude-code":
+      return "Claude Code";
+    case "anthropic-api":
+      return "Anthropic API";
+  }
 }
 
 function createDefaultThread(): ChatThreadState {
@@ -139,17 +154,14 @@ export default class PetAgentsPlugin extends Plugin {
     petStates: initialPetStates(),
   };
 
-  private readonly provider = new CodexCliProvider(() => ({
-    executable: this.settings.codexExecutable,
-    model: this.settings.codexModel,
-    profile: this.settings.codexProfile,
-  }));
+  private provider: ProviderAdapter = this.createProvider(DEFAULT_SETTINGS.providerKind);
 
   private readonly listeners = new Set<() => void>();
   private persistTimer: number | null = null;
 
   async onload(): Promise<void> {
     await this.loadPluginState();
+    this.provider = this.createProvider(this.settings.providerKind);
 
     this.promptStore = new PetPromptStore(this);
     await this.promptStore.initialize();
@@ -420,6 +432,42 @@ export default class PetAgentsPlugin extends Plugin {
     }
   }
 
+  private createProvider(kind: ProviderKind): ProviderAdapter {
+    switch (kind) {
+      case "codex-cli":
+        return new CodexCliProvider(() => ({
+          executable: this.settings.codexExecutable,
+          model: this.settings.codexModel,
+          profile: this.settings.codexProfile,
+        }));
+      case "claude-code":
+        return new ClaudeCodeProvider(() => ({
+          executable: this.settings.claudeExecutable,
+          model: this.settings.claudeModel,
+        }));
+      case "anthropic-api":
+        return new AnthropicApiProvider(() => ({
+          apiKey: this.settings.anthropicApiKey,
+          model: this.settings.anthropicApiModel,
+        }));
+    }
+  }
+
+  async switchProvider(kind: ProviderKind): Promise<void> {
+    this.settings.providerKind = kind;
+    this.provider = this.createProvider(kind);
+
+    const thread = this.getActiveThread();
+    thread.petSessions = {};
+
+    this.runtimeState.providerHealth = undefined;
+    this.runtimeState.providerHealthCheckedAt = undefined;
+    this.runtimeState.statusText = `已切换到 ${providerLabel(kind)}。`;
+    this.schedulePersist();
+    this.refreshViews();
+    await this.refreshProviderHealth();
+  }
+
   async sendUserMessage(input: string | UserTurnInput): Promise<void> {
     if (this.runtimeState.isBusy) {
       new Notice("当前还有一轮对话在处理中。");
@@ -428,7 +476,7 @@ export default class PetAgentsPlugin extends Plugin {
 
     await this.ensureProviderHealth();
     if (!this.runtimeState.providerHealth?.ok) {
-      new Notice(this.runtimeState.providerHealth?.error ?? "Codex 不可用。");
+      new Notice(this.runtimeState.providerHealth?.error ?? `${providerLabel(this.settings.providerKind)} 不可用。`);
       this.refreshViews();
       return;
     }
@@ -798,7 +846,7 @@ export default class PetAgentsPlugin extends Plugin {
     const basePath = adapter.getBasePath?.() ?? adapter.basePath;
 
     if (!basePath) {
-      throw new Error("当前 vault 不是本地桌面仓库，无法调用本地 Codex。");
+      throw new Error("当前 vault 不是本地桌面仓库，无法调用本机 Provider。");
     }
 
     return basePath;
