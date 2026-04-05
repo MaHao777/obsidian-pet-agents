@@ -5,7 +5,8 @@
   "scripts": {
     "build": "node esbuild.config.mjs production",
     "dev": "node esbuild.config.mjs",
-    "check": "tsc --noEmit"
+    "check": "tsc --noEmit",
+    "test": "node --test --experimental-strip-types tests\\memory-rules.test.ts tests\\runtime-policies.test.ts"
   },
   "devDependencies": {
     "@types/node": "^24.5.2",

@@ -81,7 +81,8 @@
 }
 
 .pet-agents-header-sprite,
-.pet-agents-avatar {
+.pet-agents-avatar,
+.pet-agents-composer-pet-avatar {
   image-rendering: pixelated;
   background: transparent;
   object-fit: cover;
@@ -303,6 +304,7 @@
 
 .pet-agents-message-row {
   display: flex;
+  flex-wrap: wrap;
   align-items: flex-start;
   gap: 8px;
   margin-bottom: 14px;
@@ -318,6 +320,139 @@
   border-radius: 10px;
   padding: 0;
   flex: 0 0 auto;
+}
+
+.pet-agents-avatar-button {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  flex: 0 0 auto;
+  cursor: pointer;
+}
+
+.pet-agents-avatar-button:hover {
+  background: rgba(71, 108, 150, 0.16);
+}
+
+.pet-agents-profile-popover {
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: 32;
+  width: min(320px, calc(100vw - 16px));
+  max-width: 320px;
+  pointer-events: none;
+  opacity: 0;
+  transform: translateY(6px) scale(0.98);
+  transition:
+    opacity 120ms ease,
+    transform 120ms ease;
+}
+
+.pet-agents-profile-popover.is-open {
+  pointer-events: auto;
+  opacity: 1;
+  transform: translateY(0) scale(1);
+}
+
+.pet-agents-message-profile-card {
+  width: 100%;
+  padding: 12px;
+  border-radius: 16px;
+  border: 1px solid rgba(111, 146, 184, 0.16);
+  background: rgba(18, 24, 33, 0.9);
+  box-shadow: 0 14px 34px rgba(5, 8, 14, 0.16);
+}
+
+.pet-agents-profile-popover .pet-agents-message-profile-card {
+  margin-left: 0;
+}
+
+.pet-agents-message-profile-top {
+  display: flex;
+  align-items: flex-start;
+  justify-content: flex-start;
+  gap: 10px;
+}
+
+.pet-agents-message-profile-identity {
+  display: grid;
+  grid-template-columns: 36px minmax(0, 1fr);
+  gap: 10px;
+  align-items: center;
+}
+
+.pet-agents-message-profile-avatar {
+  width: 36px;
+  height: 36px;
+  border-radius: 12px;
+  image-rendering: pixelated;
+}
+
+.pet-agents-message-profile-copy {
+  min-width: 0;
+}
+
+.pet-agents-message-profile-name {
+  color: rgba(245, 249, 255, 0.95);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.pet-agents-message-profile-title {
+  color: rgba(176, 194, 218, 0.72);
+  font-size: 11px;
+}
+
+.pet-agents-message-profile-close,
+.pet-agents-message-profile-action {
+  height: 28px;
+  padding: 0 10px;
+  border-radius: 10px;
+  border: 1px solid rgba(113, 149, 188, 0.2);
+  background: rgba(42, 51, 64, 0.84);
+  color: rgba(232, 240, 250, 0.9);
+}
+
+.pet-agents-message-profile-description {
+  margin-top: 10px;
+  color: rgba(221, 231, 244, 0.84);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.pet-agents-message-profile-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.pet-agents-message-profile-pills span {
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: rgba(80, 108, 140, 0.24);
+  color: rgba(211, 226, 244, 0.82);
+  font-size: 11px;
+}
+
+.pet-agents-message-profile-meta {
+  display: grid;
+  gap: 4px;
+  margin-top: 10px;
+  color: rgba(194, 213, 237, 0.8);
+  font-size: 12px;
+}
+
+.pet-agents-message-profile-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
 }
 
 .pet-agents-bubble-wrap {
@@ -373,6 +508,8 @@
   line-height: 1.6;
   white-space: pre-wrap;
   word-break: break-word;
+  user-select: text;
+  -webkit-user-select: text;
 }
 
 .pet-agents-bubble.is-user {
@@ -382,6 +519,59 @@
 
 .pet-agents-bubble.is-pending {
   opacity: 0.88;
+}
+
+.pet-agents-bubble-markdown,
+.pet-agents-bubble-markdown * {
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+.pet-agents-bubble-markdown {
+  white-space: normal;
+  line-height: 1.6;
+}
+
+.pet-agents-bubble-markdown > :first-child {
+  margin-top: 0;
+}
+
+.pet-agents-bubble-markdown > :last-child {
+  margin-bottom: 0;
+}
+
+.pet-agents-bubble-markdown img {
+  display: block;
+  max-width: min(100%, 360px);
+  border-radius: 12px;
+  margin-top: 8px;
+}
+
+.pet-agents-bubble-markdown pre,
+.pet-agents-bubble-markdown code {
+  white-space: pre-wrap;
+}
+
+.pet-agents-bubble-markdown p {
+  margin: 0 0 0.72em;
+}
+
+.pet-agents-bubble-markdown ul,
+.pet-agents-bubble-markdown ol {
+  margin: 0.45em 0 0.72em;
+  padding-left: 1.35em;
+}
+
+.pet-agents-bubble-markdown li {
+  margin: 0.22em 0;
+}
+
+.pet-agents-bubble-markdown li > p {
+  margin: 0;
+}
+
+.pet-agents-bubble-markdown blockquote {
+  margin: 0.6em 0;
 }
 
 .pet-agents-message-meta {
@@ -509,7 +699,7 @@
 }
 
 .pet-agents-settings-panel.is-expanded {
-  max-height: 240px;
+  max-height: 320px;
   opacity: 1;
   transform: translateY(0);
   margin-bottom: 8px;
@@ -518,6 +708,39 @@
   background: rgba(14, 19, 28, 0.58);
   backdrop-filter: blur(14px);
   pointer-events: auto;
+}
+
+.pet-agents-settings-summary {
+  display: grid;
+  gap: 6px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid rgba(111, 146, 184, 0.12);
+}
+
+.pet-agents-settings-summary-title {
+  color: rgba(245, 249, 255, 0.95);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.pet-agents-settings-summary-copy {
+  color: rgba(176, 194, 218, 0.78);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.pet-agents-settings-summary-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.pet-agents-settings-summary-meta span {
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: rgba(80, 108, 140, 0.24);
+  color: rgba(211, 226, 244, 0.82);
+  font-size: 11px;
 }
 
 .pet-agents-settings-section {
@@ -548,10 +771,111 @@
   position: relative;
 }
 
+.pet-agents-composer-header {
+  display: block;
+  margin-bottom: 8px;
+}
+
+.pet-agents-selection-slot {
+  min-width: 0;
+}
+
+.pet-agents-attachment-slot {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.pet-agents-attachment-row {
+  display: grid;
+  gap: 8px;
+}
+
+.pet-agents-attachment-chip {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: 16px;
+  border: 1px solid rgba(111, 146, 184, 0.16);
+  background: rgba(18, 24, 33, 0.84);
+}
+
+.pet-agents-attachment-copy {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.pet-agents-attachment-title {
+  color: rgba(214, 227, 244, 0.88);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.pet-agents-attachment-preview {
+  color: rgba(176, 194, 218, 0.74);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.pet-agents-attachment-remove {
+  flex: 0 0 auto;
+  height: 28px;
+  padding: 0 10px;
+  border-radius: 10px;
+  border: 1px solid rgba(113, 149, 188, 0.2);
+  background: rgba(42, 51, 64, 0.84);
+  color: rgba(232, 240, 250, 0.9);
+}
+
+.pet-agents-selection-chip {
+  display: grid;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: 16px;
+  border: 1px solid rgba(111, 146, 184, 0.16);
+  background: rgba(18, 24, 33, 0.84);
+}
+
+.pet-agents-selection-copy {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.pet-agents-selection-title {
+  color: rgba(214, 227, 244, 0.88);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.pet-agents-selection-preview {
+  color: rgba(176, 194, 218, 0.74);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.pet-agents-selection-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.pet-agents-selection-button {
+  height: 28px;
+  padding: 0 10px;
+  border-radius: 10px;
+  border: 1px solid rgba(113, 149, 188, 0.2);
+  background: rgba(42, 51, 64, 0.84);
+  color: rgba(232, 240, 250, 0.9);
+}
+
 .pet-agents-mention-popup {
   position: absolute;
   left: 0;
-  right: 44px;
+  right: 0;
   bottom: calc(100% + 8px);
   z-index: 4;
   display: none;
@@ -585,14 +909,19 @@
   display: grid;
   grid-template-columns: 24px minmax(0, 1fr);
   gap: 10px;
-  align-items: center;
+  align-items: start;
   width: 100%;
+  height: auto;
+  min-height: 0;
   padding: 8px 10px;
   border-radius: 12px;
   border: 1px solid rgba(113, 149, 188, 0.16);
   background: rgba(42, 51, 64, 0.46);
   color: rgba(232, 240, 250, 0.92);
   text-align: left;
+  white-space: normal;
+  line-height: 1.35;
+  box-sizing: border-box;
 }
 
 .pet-agents-mention-option.is-selected {
@@ -600,34 +929,55 @@
   background: rgba(71, 108, 150, 0.42);
 }
 
+.pet-agents-mention-option.is-slash {
+  grid-template-columns: 24px minmax(0, 1fr);
+}
+
 .pet-agents-mention-avatar {
   width: 24px;
   height: 24px;
   border-radius: 8px;
   object-fit: cover;
+  margin-top: 2px;
+}
+
+.pet-agents-mention-icon {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 8px;
+  background: rgba(71, 108, 150, 0.42);
+  color: rgba(244, 248, 255, 0.94);
+  font-size: 13px;
+  font-weight: 700;
+  margin-top: 2px;
 }
 
 .pet-agents-mention-copy {
   display: grid;
   gap: 2px;
   min-width: 0;
+  align-self: start;
 }
 
 .pet-agents-mention-name {
   color: rgba(244, 248, 255, 0.94);
   font-size: 13px;
+  line-height: 1.35;
 }
 
 .pet-agents-mention-role {
   color: rgba(176, 194, 218, 0.68);
   font-size: 11px;
+  line-height: 1.35;
 }
 
 .pet-agents-input {
   width: 100%;
   min-height: 72px;
   resize: vertical;
-  padding: 12px 42px 10px 12px;
+  padding: 12px 14px 10px 14px;
   border-radius: 18px;
   border: 1px solid rgba(93, 122, 155, 0.22);
   background: rgba(23, 28, 35, 0.96);

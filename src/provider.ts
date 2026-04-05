@@ -6,8 +6,8 @@ import type {
   ProviderStreamEvent,
   ProviderTurnRequest,
   ProviderTurnResult,
-  TaskExecutionPolicy,
 } from "./types";
+import { resolveExecutionPolicy } from "./runtime-policies";
 
 declare const require: NodeRequire;
 
@@ -54,18 +54,9 @@ function pushRootArgs(args: string[], options: CodexProviderOptions, request: Pr
 }
 
 function pushNewSessionPolicy(args: string[], request: ProviderTurnRequest): void {
-  if (request.mode === "chat") {
+  const policy = resolveExecutionPolicy(request.mode, request.executionPolicy);
+  if (policy === "read-only") {
     args.push("--sandbox", "read-only");
-    return;
-  }
-
-  if (request.executionPolicy === "read-only") {
-    args.push("--sandbox", "read-only");
-    return;
-  }
-
-  if (request.executionPolicy === "workspace-write") {
-    args.push("--full-auto");
     return;
   }
 
@@ -73,12 +64,8 @@ function pushNewSessionPolicy(args: string[], request: ProviderTurnRequest): voi
 }
 
 function pushResumePolicy(args: string[], request: ProviderTurnRequest): void {
-  if (request.mode === "chat" || request.executionPolicy === "read-only") {
-    return;
-  }
-
-  if (request.executionPolicy === "workspace-write") {
-    args.push("--full-auto");
+  const policy = resolveExecutionPolicy(request.mode, request.executionPolicy);
+  if (policy === "read-only") {
     return;
   }
 

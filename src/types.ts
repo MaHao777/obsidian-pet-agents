@@ -4,13 +4,22 @@ export type ChatRole = "user" | "assistant" | "status";
 
 export type ExecutionMode = "chat" | "task";
 
+export type SlashCommandId = "current-file" | "file" | "skill" | "refresh-memory";
+
 export type PetReasoningEffort = "low" | "medium" | "high" | "xhigh";
 
 export type TaskExecutionPolicy = "read-only" | "workspace-write" | "danger-full-access";
 
 export type PetVisualState = "idle" | "thinking" | "speaking" | "error";
-
-export type MemoryTier = "session" | "episodic" | "semantic" | "capsule";
+export type {
+  MemoryContext,
+  MemoryContextEntry,
+  MemoryIndexState,
+  MemoryNodeKind,
+  MemorySourceIndexEntry,
+  StoredMemoryNote,
+  ThingPrimaryType,
+} from "./memory-graph.ts";
 
 export interface AgentProfile {
   id: PetAgentId;
@@ -58,41 +67,28 @@ export interface ChatThreadState {
   updatedAt: number;
 }
 
-export interface MemoryRecord {
-  id: string;
-  tier: MemoryTier;
-  path: string;
-  title: string;
-  text: string;
-  summary: string;
-  keywords: string[];
-  tags: string[];
-  petBias: PetAgentId[];
-  createdAt: number;
-  updatedAt: number;
-  importance: number;
-  sourceId?: string;
-  dateHint?: string;
-}
-
-export interface MemorySnapshot {
-  schemaVersion: number;
-  lastScanAt: number;
-  records: MemoryRecord[];
-  scannedFiles: Record<string, number>;
-}
-
-export interface MemoryContext {
-  capsules: MemoryRecord[];
-  details: MemoryRecord[];
-  sessionSummary?: string;
-}
-
 export interface MemoryQuery {
   petId: PetAgentId;
   query: string;
   conversation: ChatMessage[];
 }
+
+export interface FileAttachment {
+  kind: "file";
+  source: "current-file" | "file";
+  path: string;
+  content: string;
+  truncated: boolean;
+}
+
+export interface SkillAttachment {
+  kind: "skill";
+  name: string;
+  description: string;
+  path: string;
+}
+
+export type ComposerAttachment = FileAttachment | SkillAttachment;
 
 export interface PetRuntimeSetting {
   model: string;
@@ -109,6 +105,8 @@ export interface PetAgentsSettings {
   petRuntimeSettings: PetRuntimeSettings;
   taskExecutionPolicy: TaskExecutionPolicy;
   taskModeConfirmation: boolean;
+  memorySourcePaths: string[];
+  memoryFolderPath: string;
   memoryWhitelistPaths: string[];
   diaryFolderHints: string[];
   autoScanMemory: boolean;
@@ -120,7 +118,7 @@ export interface PetAgentsSettings {
 
 export interface PetAgentsPluginData {
   settings: PetAgentsSettings;
-  memory: MemorySnapshot;
+  memory: import("./memory-graph.ts").MemoryIndexState;
   threads: Record<string, ChatThreadState>;
 }
 

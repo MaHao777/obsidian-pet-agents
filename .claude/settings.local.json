@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cp \"D:\\\\VS_project\\\\OBS_PetAgents\\\\main.js\" \"D:\\\\ObsidianData\\\\Note\\\\.obsidian\\\\plugins\\\\obs-pet-agents\\\\main.js\")",
+      "Bash(cp \"D:\\\\VS_project\\\\OBS_PetAgents\\\\styles.css\" \"D:\\\\ObsidianData\\\\Note\\\\.obsidian\\\\plugins\\\\obs-pet-agents\\\\styles.css\")",
+      "Bash(cp \"D:\\\\VS_project\\\\OBS_PetAgents\\\\manifest.json\" \"D:\\\\ObsidianData\\\\Note\\\\.obsidian\\\\plugins\\\\obs-pet-agents\\\\manifest.json\")",
+      "Bash(cp \"D:\\\\VS_project\\\\OBS_PetAgents\\\\versions.json\" \"D:\\\\ObsidianData\\\\Note\\\\.obsidian\\\\plugins\\\\obs-pet-agents\\\\versions.json\")",
+      "Bash(obsidian reload:*)",
+      "Bash(obsidian plugin:reload id=obs-pet-agents vault=Note)"
+    ]
+  }
+}

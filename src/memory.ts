@@ -1,106 +1,187 @@
-import { normalizePath, TFile } from "obsidian";
+import type { TFile } from "obsidian";
 
-import type {
-  ChatMessage,
-  MemoryContext,
-  MemoryQuery,
-  MemoryRecord,
-  MemorySnapshot,
-  PetAgentId,
-} from "./types";
+import {
+  buildMemoryContext,
+  buildMemoryGraph,
+  buildMemoryNoteMarkdown,
+  buildMemoryNotePath,
+  normalizeMemoryIndexState,
+  parseMemoryNoteMarkdown,
+  type MemoryContext,
+  type MemoryGraph,
+  type MemoryIndexState,
+  type MemoryNodeKind,
+  type MemorySourceIndexEntry,
+  type StoredMemoryNote,
+  type ThingPrimaryType,
+} from "./memory-graph.ts";
+import type { MemoryExtractionAtom, MemoryExtractionRelation } from "./memory-extraction.ts";
 
-const MEMORY_SCHEMA_VERSION = 1;
-const DETAIL_HINT = /细节|详细|原文|原话|哪天|当时|时间线|具体|展开|怎么写|发生了什么|回忆/i;
-const DIARY_FILE_HINT = /daily|journal|diary|log|日记|日志|daily notes/i;
-const DATE_BASENAME = /\d{4}[-_./]\d{1,2}[-_./]\d{1,2}/;
+const DEFAULT_MEMORY_FOLDER = "memory";
+const NOTE_SCHEMA_VERSION = 3;
 
-function tokenize(text: string): string[] {
-  return Array.from(
-    new Set(
-      text
-        .toLowerCase()
-        .replace(/[^\p{Letter}\p{Number}\u4e00-\u9fff]+/gu, " ")
-        .split(/\s+/)
-        .map((token) => token.trim())
-        .filter((token) => token.length >= 2),
-    ),
-  );
+type ResolvedMemoryAtom = MemoryExtractionAtom & {
+  memoryId: string;
+  relatedIds: string[];
+  resolvedThingIds: string[];
+  resolvedPlaceIds: string[];
+};
+
+type MemoryNoteLookup = {
+  allNotes: Map<string, StoredMemoryNote>;
+  graph: MemoryGraph;
+  hasLegacyNotes: boolean;
+};
+
+function normalizeVaultPath(path: string): string {
+  return path.replace(/\\/g, "/").replace(/\/+/g, "/").replace(/^\/+/, "").replace(/\/+$/, "");
 }
 
-function clip(text: string, maxLength: number): string {
-  return text.length <= maxLength ? text : `${text.slice(0, Math.max(0, maxLength - 1)).trimEnd()}…`;
+function uniqueStrings(values: string[]): string[] {
+  return Array.from(new Set(values.map((value) => value.trim()).filter(Boolean)));
 }
 
-function fileLooksLikeDiary(path: string, hints: string[]): boolean {
-  const lowerPath = path.toLowerCase();
-  return hints.some((hint) => lowerPath.includes(hint.toLowerCase())) || DIARY_FILE_HINT.test(path) || DATE_BASENAME.test(path);
+function slugify(text: string): string {
+  const normalized = text
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9\u4e00-\u9fff]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "");
+
+  return normalized || "memory";
 }
 
-function derivePetBias(path: string, text: string, isDiary: boolean): PetAgentId[] {
-  const lower = `${path}\n${text}`.toLowerCase();
-  const hits = new Set<PetAgentId>();
-
-  if (isDiary || /心情|感受|关系|朋友|焦虑|开心|难过|烦|共鸣|情绪/i.test(lower)) {
-    hits.add("homie-rabbit");
+function hashText(text: string): string {
+  let hash = 2166136261;
+  for (let index = 0; index < text.length; index += 1) {
+    hash ^= text.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
   }
-  if (/论文|研究|概念|理论|实验|课程|学习|学术|读书|知识/i.test(lower)) {
-    hits.add("scholar-panda");
-  }
-  if (/项目|插件|代码|系统|架构|bug|任务|实现|obsidian|仓库|api|发布/i.test(lower)) {
-    hits.add("engineer-mole");
-  }
-
-  if (hits.size === 0) {
-    hits.add(isDiary ? "homie-rabbit" : "engineer-mole");
-  }
-
-  return Array.from(hits);
+  return (hash >>> 0).toString(16).padStart(8, "0");
 }
 
-function importanceScore(path: string, text: string, isDiary: boolean): number {
-  let score = Math.min(1, text.length / 260);
-  if (isDiary) {
-    score += 0.3;
+function stableMemoryId(kind: MemoryNodeKind, title: string, thingType?: ThingPrimaryType): string {
+  const slug = slugify(title);
+  const suffix = hashText(`${kind}:${thingType ?? ""}:${title.trim().toLowerCase()}`).slice(0, 8);
+  return `${kind}-${slug}-${suffix}`;
+}
+
+function isPathInRoots(path: string, roots: string[]): boolean {
+  const normalizedPath = normalizeVaultPath(path).toLowerCase();
+  return roots.some((root) => {
+    const normalizedRoot = normalizeVaultPath(root).toLowerCase();
+    return normalizedPath === normalizedRoot || normalizedPath.startsWith(`${normalizedRoot}/`);
+  });
+}
+
+function folderParts(path: string): string[] {
+  const normalized = normalizeVaultPath(path);
+  const segments = normalized.split("/");
+  segments.pop();
+
+  const result: string[] = [];
+  let current = "";
+  for (const segment of segments) {
+    current = current ? `${current}/${segment}` : segment;
+    result.push(current);
   }
-  if (/喜欢|讨厌|决定|计划|目标|必须|约定|提醒|重要|失败|完成/i.test(text)) {
-    score += 0.25;
+  return result;
+}
+
+function removeSource(note: StoredMemoryNote, sourcePath: string): StoredMemoryNote {
+  const nextHashes = { ...note.sourceHashes };
+  delete nextHashes[sourcePath];
+  return {
+    ...note,
+    sourcePaths: note.sourcePaths.filter((path) => path !== sourcePath),
+    sourceHashes: nextHashes,
+  };
+}
+
+function buildTitleIndex(notes: Iterable<StoredMemoryNote>): Map<string, string> {
+  const index = new Map<string, string>();
+  for (const note of notes) {
+    if (note.archived) {
+      continue;
+    }
+    index.set(note.title.trim().toLowerCase(), note.memoryId);
+    note.aliases.forEach((alias) => index.set(alias.trim().toLowerCase(), note.memoryId));
   }
-  if (/项目|代码|论文|研究|任务|想法|感受/i.test(`${path}\n${text}`)) {
-    score += 0.2;
+  return index;
+}
+
+function resolveThingReferenceId(
+  title: string,
+  thingType: ThingPrimaryType,
+  titleIndex: Map<string, string>,
+  batchTitleIndex: Map<string, string>,
+): string {
+  const normalizedTitle = title.trim().toLowerCase();
+  return batchTitleIndex.get(normalizedTitle) ?? titleIndex.get(normalizedTitle) ?? stableMemoryId("thing", title, thingType);
+}
+
+function resolveRelationId(
+  relation: MemoryExtractionRelation,
+  titleIndex: Map<string, string>,
+  batchTitleIndex: Map<string, string>,
+): string {
+  const normalizedTitle = relation.title.trim().toLowerCase();
+  if (batchTitleIndex.has(normalizedTitle)) {
+    return batchTitleIndex.get(normalizedTitle)!;
   }
-  return Math.min(1.5, score);
-}
-
-function extractTitle(content: string, fallback: string): string {
-  const heading = content
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .find((line) => line.startsWith("# "));
-  return heading ? heading.slice(2).trim() : fallback;
-}
-
-function splitSegments(content: string): string[] {
-  return content
-    .split(/\n{2,}/)
-    .map((segment) => segment.replace(/\r/g, "").trim())
-    .filter((segment) => segment.length >= 20)
-    .slice(0, 14);
-}
-
-function summarizeSegment(text: string): string {
-  return clip(text.replace(/\s+/g, " ").trim(), 120);
-}
-
-function semanticLine(title: string, segment: string): string {
-  return `${title}: ${clip(segment.replace(/\s+/g, " ").trim(), 96)}`;
-}
-
-function shouldIncludeFile(path: string, whitelist: string[], hints: string[]): boolean {
-  const normalized = normalizePath(path).toLowerCase();
-  if (whitelist.length > 0 && whitelist.some((root) => normalized.startsWith(normalizePath(root).toLowerCase()))) {
-    return true;
+  if (titleIndex.has(normalizedTitle)) {
+    return titleIndex.get(normalizedTitle)!;
   }
-  return fileLooksLikeDiary(path, hints);
+  return stableMemoryId(relation.kind ?? "thing", relation.title, relation.kind === "thing" ? relation.thingType : undefined);
+}
+
+function mergeNote(
+  existing: StoredMemoryNote | undefined,
+  atom: ResolvedMemoryAtom,
+  sourcePath: string,
+  sourceHash: string,
+  memoryFolderPath: string,
+  nowIso: string,
+): StoredMemoryNote {
+  const base: StoredMemoryNote = {
+    schemaVersion: NOTE_SCHEMA_VERSION,
+    memoryId: atom.memoryId,
+    title: atom.title,
+    kind: atom.kind,
+    aliases: uniqueStrings([...(existing?.aliases ?? []), ...atom.aliases]),
+    summary: atom.summary || existing?.summary || atom.title,
+    facts: uniqueStrings(atom.facts.length > 0 ? atom.facts : existing?.facts ?? []).slice(0, 8),
+    sourcePaths: uniqueStrings([...(existing?.sourcePaths ?? []), sourcePath]),
+    sourceHashes: {
+      ...(existing?.sourceHashes ?? {}),
+      [sourcePath]: sourceHash,
+    },
+    relatedIds: uniqueStrings([
+      ...(existing?.relatedIds ?? []),
+      ...atom.relatedIds,
+      ...(atom.kind === "event" ? [...atom.resolvedThingIds, ...atom.resolvedPlaceIds] : []),
+    ]).filter((id) => id !== atom.memoryId),
+    archived: false,
+    generatedAt: existing?.generatedAt ?? nowIso,
+    updatedAt: nowIso,
+    filePath: "",
+    thingType: atom.kind === "thing" ? atom.thingType ?? existing?.thingType ?? "other" : undefined,
+    thingTags: atom.kind === "thing" ? uniqueStrings([...(existing?.thingTags ?? []), ...atom.thingTags]).slice(0, 6) : [],
+    eventDate: atom.kind === "event" ? atom.eventDate ?? existing?.eventDate : undefined,
+    placeIds: atom.kind === "event" ? uniqueStrings([...(existing?.placeIds ?? []), ...atom.resolvedPlaceIds]) : [],
+    feelingTags: atom.kind === "event" ? uniqueStrings([...(existing?.feelingTags ?? []), ...atom.feelingTags]).slice(0, 4) : [],
+    thingIds: atom.kind === "event" ? uniqueStrings([...(existing?.thingIds ?? []), ...atom.resolvedThingIds]) : [],
+  };
+
+  base.filePath = buildMemoryNotePath(memoryFolderPath, base);
+  return base;
+}
+
+export interface MemoryGitChangeSet {
+  paths: string[];
+  headCommit: string;
 }
 
 export interface MemoryHost {
@@ -108,201 +189,383 @@ export interface MemoryHost {
     vault: {
       getMarkdownFiles(): TFile[];
       cachedRead(file: TFile): Promise<string>;
+      getAbstractFileByPath(path: string): TFile | { path: string } | null;
+      createFolder(path: string): Promise<unknown>;
+      create(path: string, content: string): Promise<TFile>;
+      modify(file: TFile, content: string): Promise<unknown>;
+      rename(file: TFile | { path: string }, newPath: string): Promise<unknown>;
     };
   };
   settings: {
-    memoryWhitelistPaths: string[];
-    diaryFolderHints: string[];
-    memoryCapsuleLimit: number;
-    memoryDetailLimit: number;
+    memorySourcePaths: string[];
+    memoryFolderPath: string;
   };
   schedulePersist(): void;
+  extractMemoryAtoms(input: { path: string; content: string }): Promise<MemoryExtractionAtom[]>;
+  getGitChanges?(sourcePaths: string[], lastIndexedCommit: string): Promise<MemoryGitChangeSet | null>;
 }
 
 export class LayeredMemoryService {
-  snapshot: MemorySnapshot;
+  snapshot: MemoryIndexState;
+  private readonly host: MemoryHost;
+  private notes = new Map<string, StoredMemoryNote>();
+  private graph = buildMemoryGraph([]);
 
-  constructor(private readonly host: MemoryHost, snapshot?: MemorySnapshot) {
-    this.snapshot = snapshot ?? {
-      schemaVersion: MEMORY_SCHEMA_VERSION,
-      lastScanAt: 0,
-      records: [],
-      scannedFiles: {},
-    };
+  constructor(host: MemoryHost, snapshot?: unknown) {
+    this.host = host;
+    this.snapshot = normalizeMemoryIndexState(snapshot, this.memoryFolderPath);
+  }
+
+  get activeMemoryCount(): number {
+    return this.snapshot.activeMemoryCount;
   }
 
   async initialize(): Promise<void> {
-    if (this.snapshot.schemaVersion !== MEMORY_SCHEMA_VERSION) {
-      this.snapshot = {
-        schemaVersion: MEMORY_SCHEMA_VERSION,
-        lastScanAt: 0,
-        records: [],
-        scannedFiles: {},
-      };
-    }
-    await this.fullScan(false);
+    this.snapshot = normalizeMemoryIndexState(this.snapshot, this.memoryFolderPath);
+    await this.ensureMemoryFolders();
+    await this.reloadGraph();
+    await this.fullScan(this.snapshot.lastSyncAt === 0 || Object.keys(this.snapshot.sourceFiles).length === 0);
   }
 
   async fullScan(force: boolean): Promise<void> {
-    const files = this.host.app.vault.getMarkdownFiles();
-    const whitelist = this.host.settings.memoryWhitelistPaths;
-    const hints = this.host.settings.diaryFolderHints;
-    const nextRecords: MemoryRecord[] = [];
-    const nextScannedFiles: Record<string, number> = {};
+    await this.ensureMemoryFolders();
+    const noteLookup = await this.loadAllNotes();
+    this.notes = noteLookup.allNotes;
+    this.graph = noteLookup.graph;
 
-    for (const file of files) {
-      if (!shouldIncludeFile(file.path, whitelist, hints)) {
-        continue;
+    const sourceFiles = this.getSourceFiles();
+    const currentSourceMap = new Map(sourceFiles.map((file) => [normalizeVaultPath(file.path), file]));
+    const deletedPaths = Object.keys(this.snapshot.sourceFiles).filter((path) => !currentSourceMap.has(normalizeVaultPath(path)));
+    const shouldForceRescan = force || noteLookup.hasLegacyNotes;
+    const changeSet = await this.collectChangedPaths(sourceFiles, deletedPaths, shouldForceRescan);
+    const changedExistingPaths = changeSet.paths.filter((path) => currentSourceMap.has(path));
+    const deletedChangedPaths = changeSet.paths.filter((path) => !currentSourceMap.has(path));
+
+    const extractions = new Map<
+      string,
+      {
+        file: TFile;
+        contentHash: string;
+        atoms: ResolvedMemoryAtom[];
+      }
+    >();
+
+    if (changedExistingPaths.length > 0) {
+      const titleIndex = buildTitleIndex(this.notes.values());
+      const rawExtractions = new Map<
+        string,
+        {
+          file: TFile;
+          contentHash: string;
+          atoms: MemoryExtractionAtom[];
+        }
+      >();
+      const batchTitleIndex = new Map<string, string>();
+
+      for (const path of changedExistingPaths) {
+        const file = currentSourceMap.get(path)!;
+        const content = await this.host.app.vault.cachedRead(file);
+        const contentHash = hashText(content);
+        const atoms = await this.host.extractMemoryAtoms({ path, content });
+        rawExtractions.set(path, {
+          file,
+          contentHash,
+          atoms,
+        });
+        atoms.forEach((atom) => {
+          const memoryId = stableMemoryId(atom.kind, atom.title, atom.kind === "thing" ? atom.thingType : undefined);
+          batchTitleIndex.set(atom.title.trim().toLowerCase(), memoryId);
+          atom.aliases.forEach((alias) => batchTitleIndex.set(alias.trim().toLowerCase(), memoryId));
+        });
       }
 
-      if (!force && this.snapshot.scannedFiles[file.path] === file.stat.mtime) {
-        nextRecords.push(...this.snapshot.records.filter((record) => record.path === file.path));
-        nextScannedFiles[file.path] = file.stat.mtime;
-        continue;
-      }
+      rawExtractions.forEach((entry, path) => {
+        const atoms = entry.atoms
+          .map<ResolvedMemoryAtom | null>((atom) => {
+            const resolvedThingIds =
+              atom.kind === "event"
+                ? uniqueStrings(atom.thingTitles.map((title) => resolveThingReferenceId(title, "other", titleIndex, batchTitleIndex)))
+                : [];
+            const resolvedPlaceIds =
+              atom.kind === "event"
+                ? uniqueStrings(atom.placeTitles.map((title) => resolveThingReferenceId(title, "place", titleIndex, batchTitleIndex)))
+                : [];
 
-      const content = await this.host.app.vault.cachedRead(file);
-      nextRecords.push(...this.buildRecords(file, content));
-      nextScannedFiles[file.path] = file.stat.mtime;
+            if (atom.kind === "event" && resolvedThingIds.length === 0 && resolvedPlaceIds.length === 0) {
+              return null;
+            }
+
+            const relatedIds = uniqueStrings(
+              atom.relations.map((relation) => resolveRelationId(relation, titleIndex, batchTitleIndex)),
+            );
+
+            return {
+              ...atom,
+              memoryId: stableMemoryId(atom.kind, atom.title, atom.kind === "thing" ? atom.thingType : undefined),
+              relatedIds,
+              resolvedThingIds,
+              resolvedPlaceIds,
+            };
+          })
+          .filter((atom): atom is ResolvedMemoryAtom => atom !== null);
+
+        extractions.set(path, {
+          file: entry.file,
+          contentHash: entry.contentHash,
+          atoms,
+        });
+      });
     }
 
-    this.snapshot = {
-      schemaVersion: MEMORY_SCHEMA_VERSION,
-      lastScanAt: Date.now(),
-      records: nextRecords,
-      scannedFiles: nextScannedFiles,
-    };
+    for (const path of deletedChangedPaths) {
+      await this.detachMissingSource(path);
+      delete this.snapshot.sourceFiles[path];
+    }
+
+    for (const path of changedExistingPaths) {
+      const extracted = extractions.get(path)!;
+      const previousIds = this.snapshot.sourceFiles[path]?.memoryIds ?? [];
+      const nextIds = extracted.atoms.map((atom) => atom.memoryId);
+      const sourceHash = extracted.contentHash;
+      const nowIso = new Date().toISOString();
+
+      for (const staleId of previousIds.filter((id) => !nextIds.includes(id))) {
+        await this.detachSourceFromMemory(staleId, path);
+      }
+
+      for (const atom of extracted.atoms) {
+        const existing = this.notes.get(atom.memoryId);
+        const nextNote = mergeNote(existing, atom, path, sourceHash, this.memoryFolderPath, nowIso);
+        await this.writeNote(existing?.filePath, nextNote);
+        this.notes.set(nextNote.memoryId, nextNote);
+      }
+
+      const updatedAt = extracted.file.stat.mtime;
+      const nextSourceEntry: MemorySourceIndexEntry = {
+        contentHash: sourceHash,
+        updatedAt,
+        memoryIds: nextIds,
+      };
+      this.snapshot.sourceFiles[path] = nextSourceEntry;
+    }
+
+    if (noteLookup.hasLegacyNotes) {
+      await this.archiveLegacyNotes();
+    }
+
+    this.snapshot.lastSyncAt = Date.now();
+    if (changeSet.headCommit) {
+      this.snapshot.lastIndexedCommit = changeSet.headCommit;
+    }
+
+    await this.reloadGraph();
     this.host.schedulePersist();
   }
 
-  async refreshFile(file: TFile): Promise<void> {
-    if (!shouldIncludeFile(file.path, this.host.settings.memoryWhitelistPaths, this.host.settings.diaryFolderHints)) {
+  async refreshFile(): Promise<void> {
+    await this.fullScan(false);
+  }
+
+  async removePath(): Promise<void> {
+    await this.fullScan(false);
+  }
+
+  isManagedMemoryPath(path: string): boolean {
+    const normalizedPath = normalizeVaultPath(path);
+    const folder = this.memoryFolderPath.toLowerCase();
+    return normalizedPath.toLowerCase() === folder || normalizedPath.toLowerCase().startsWith(`${folder}/`);
+  }
+
+  isSourcePath(path: string): boolean {
+    return isPathInRoots(path, this.sourcePaths);
+  }
+
+  buildContext(query: { petId: string; query: string; conversation: import("./types").ChatMessage[] }): MemoryContext {
+    return buildMemoryContext({
+      graph: this.graph,
+      query: query.query,
+      conversation: query.conversation,
+    });
+  }
+
+  private get sourcePaths(): string[] {
+    return uniqueStrings(this.host.settings.memorySourcePaths.map((path) => normalizeVaultPath(path))).filter(Boolean);
+  }
+
+  private get memoryFolderPath(): string {
+    return normalizeVaultPath(this.host.settings.memoryFolderPath || DEFAULT_MEMORY_FOLDER) || DEFAULT_MEMORY_FOLDER;
+  }
+
+  private getSourceFiles(): TFile[] {
+    if (this.sourcePaths.length === 0) {
+      return [];
+    }
+
+    return this.host.app.vault
+      .getMarkdownFiles()
+      .filter((file) => {
+        const path = normalizeVaultPath(file.path);
+        if (this.isManagedMemoryPath(path)) {
+          return false;
+        }
+        return isPathInRoots(path, this.sourcePaths);
+      })
+      .sort((left, right) => normalizeVaultPath(left.path).localeCompare(normalizeVaultPath(right.path), "zh-CN"));
+  }
+
+  private async collectChangedPaths(sourceFiles: TFile[], deletedPaths: string[], force: boolean): Promise<{ paths: string[]; headCommit: string }> {
+    const normalizedDeletedPaths = deletedPaths.map((path) => normalizeVaultPath(path));
+    if (force) {
+      return {
+        paths: uniqueStrings(sourceFiles.map((file) => normalizeVaultPath(file.path)).concat(normalizedDeletedPaths)),
+        headCommit: this.snapshot.lastIndexedCommit,
+      };
+    }
+
+    if (this.host.getGitChanges) {
+      try {
+        const gitChanges = await this.host.getGitChanges(this.sourcePaths, this.snapshot.lastIndexedCommit);
+        if (gitChanges) {
+          const paths = uniqueStrings(
+            gitChanges.paths
+              .map((path) => normalizeVaultPath(path))
+              .filter((path) => this.isSourcePath(path) || this.snapshot.sourceFiles[path] !== undefined)
+              .concat(normalizedDeletedPaths),
+          );
+          return {
+            paths,
+            headCommit: gitChanges.headCommit,
+          };
+        }
+      } catch {
+        // Fallback below.
+      }
+    }
+
+    const changedPaths = [...normalizedDeletedPaths];
+    for (const file of sourceFiles) {
+      const path = normalizeVaultPath(file.path);
+      const previous = this.snapshot.sourceFiles[path];
+      if (!previous) {
+        changedPaths.push(path);
+        continue;
+      }
+      if (previous.updatedAt !== file.stat.mtime) {
+        const content = await this.host.app.vault.cachedRead(file);
+        if (previous.contentHash !== hashText(content)) {
+          changedPaths.push(path);
+        }
+      }
+    }
+
+    return {
+      paths: uniqueStrings(changedPaths),
+      headCommit: this.snapshot.lastIndexedCommit,
+    };
+  }
+
+  private async loadAllNotes(): Promise<MemoryNoteLookup> {
+    const notes: StoredMemoryNote[] = [];
+    const folder = this.memoryFolderPath.toLowerCase();
+
+    for (const file of this.host.app.vault.getMarkdownFiles()) {
+      const path = normalizeVaultPath(file.path);
+      if (path.toLowerCase() !== folder && !path.toLowerCase().startsWith(`${folder}/`)) {
+        continue;
+      }
+      const content = await this.host.app.vault.cachedRead(file);
+      const parsed = parseMemoryNoteMarkdown(path, content);
+      if (parsed) {
+        notes.push(parsed);
+      }
+    }
+
+    return {
+      allNotes: new Map(notes.map((note) => [note.memoryId, note])),
+      graph: buildMemoryGraph(notes),
+      hasLegacyNotes: notes.some((note) => note.schemaVersion < NOTE_SCHEMA_VERSION),
+    };
+  }
+
+  private async reloadGraph(): Promise<void> {
+    const loaded = await this.loadAllNotes();
+    this.notes = loaded.allNotes;
+    this.graph = loaded.graph;
+    this.snapshot.memoryFolderPath = this.memoryFolderPath;
+    this.snapshot.activeMemoryCount = Array.from(this.notes.values()).filter((note) => !note.archived).length;
+    this.snapshot.archivedMemoryCount = Array.from(this.notes.values()).filter((note) => note.archived).length;
+  }
+
+  private async ensureMemoryFolders(): Promise<void> {
+    for (const path of [this.memoryFolderPath, `${this.memoryFolderPath}/archive`]) {
+      for (const folderPath of folderParts(path)) {
+        if (!this.host.app.vault.getAbstractFileByPath(folderPath)) {
+          await this.host.app.vault.createFolder(folderPath);
+        }
+      }
+      if (!this.host.app.vault.getAbstractFileByPath(path)) {
+        await this.host.app.vault.createFolder(path);
+      }
+    }
+  }
+
+  private async writeNote(currentPath: string | undefined, note: StoredMemoryNote): Promise<void> {
+    const targetPath = buildMemoryNotePath(this.memoryFolderPath, note);
+    note.filePath = targetPath;
+    const markdown = buildMemoryNoteMarkdown(note);
+    const currentFile = currentPath ? (this.host.app.vault.getAbstractFileByPath(currentPath) as TFile | null) : null;
+    const targetFile = this.host.app.vault.getAbstractFileByPath(targetPath) as TFile | null;
+
+    if (currentFile && currentPath !== targetPath && !targetFile) {
+      await this.host.app.vault.rename(currentFile, targetPath);
+    }
+
+    const file = (this.host.app.vault.getAbstractFileByPath(targetPath) as TFile | null) ?? null;
+    if (file) {
+      await this.host.app.vault.modify(file, markdown);
       return;
     }
 
-    const content = await this.host.app.vault.cachedRead(file);
-    this.snapshot.records = this.snapshot.records.filter((record) => record.path !== file.path).concat(this.buildRecords(file, content));
-    this.snapshot.scannedFiles[file.path] = file.stat.mtime;
-    this.snapshot.lastScanAt = Date.now();
-    this.host.schedulePersist();
+    await this.host.app.vault.create(targetPath, markdown);
   }
 
-  removePath(path: string): void {
-    this.snapshot.records = this.snapshot.records.filter((record) => record.path !== path);
-    delete this.snapshot.scannedFiles[path];
-    this.snapshot.lastScanAt = Date.now();
-    this.host.schedulePersist();
-  }
-
-  buildContext(query: MemoryQuery): MemoryContext {
-    const queryTokens = tokenize(query.query);
-    const detailRequested = DETAIL_HINT.test(query.query);
-    const semanticMatches = this.snapshot.records
-      .filter((record) => record.tier === "semantic")
-      .map((record) => ({
-        record,
-        score: this.scoreRecord(record, queryTokens, query.petId),
-      }))
-      .filter((item) => item.score > 0.15)
-      .sort((left, right) => right.score - left.score)
-      .slice(0, this.host.settings.memoryCapsuleLimit);
-
-    const detailIds = new Set(semanticMatches.map((item) => item.record.sourceId).filter(Boolean));
-    const details = detailRequested
-      ? this.snapshot.records
-          .filter((record) => record.tier === "episodic" && detailIds.has(record.id))
-          .sort((left, right) => right.importance - left.importance)
-          .slice(0, this.host.settings.memoryDetailLimit)
-      : [];
-
-    return {
-      capsules: semanticMatches.map((item) => item.record),
-      details,
-      sessionSummary: this.summarizeConversation(query.conversation),
-    };
-  }
-
-  private buildRecords(file: TFile, content: string): MemoryRecord[] {
-    const isDiary = fileLooksLikeDiary(file.path, this.host.settings.diaryFolderHints);
-    const title = extractTitle(content, file.basename);
-    const segments = splitSegments(content);
-    const records: MemoryRecord[] = [];
-
-    segments.forEach((segment, index) => {
-      const id = `${file.path}#${index}`;
-      const updatedAt = file.stat.mtime;
-      const summary = summarizeSegment(segment);
-      const keywords = tokenize(`${title}\n${segment}`);
-      const tags = Array.from(new Set((segment.match(/#[\p{Letter}\p{Number}_/-]+/gu) ?? []).map((tag) => tag.slice(1))));
-      const petBias = derivePetBias(file.path, segment, isDiary);
-      const importance = importanceScore(file.path, segment, isDiary);
-      const dateHint = DATE_BASENAME.exec(file.path)?.[0];
-
-      records.push({
-        id,
-        tier: "episodic",
-        path: file.path,
-        title,
-        text: segment,
-        summary,
-        keywords,
-        tags,
-        petBias,
-        createdAt: updatedAt,
-        updatedAt,
-        importance,
-        dateHint,
-      });
-
-      records.push({
-        id: `${id}:semantic`,
-        tier: "semantic",
-        path: file.path,
-        title,
-        text: semanticLine(title, segment),
-        summary,
-        keywords,
-        tags,
-        petBias,
-        createdAt: updatedAt,
-        updatedAt,
-        importance: Math.min(1.2, importance + 0.2),
-        sourceId: id,
-        dateHint,
-      });
-    });
-
-    return records;
-  }
-
-  private scoreRecord(record: MemoryRecord, queryTokens: string[], petId: PetAgentId): number {
-    const overlap = queryTokens.filter((token) => record.keywords.includes(token)).length;
-    const overlapScore = queryTokens.length > 0 ? overlap / queryTokens.length : 0;
-    const biasScore = record.petBias.includes(petId) ? 0.35 : 0;
-    const recencyDays = Math.max(1, (Date.now() - record.updatedAt) / (1000 * 60 * 60 * 24));
-    const recencyScore = 0.25 / Math.log2(recencyDays + 2);
-    return overlapScore + biasScore + recencyScore + record.importance * 0.2;
-  }
-
-  private summarizeConversation(messages: ChatMessage[]): string | undefined {
-    const summary = messages
-      .filter((message) => message.role !== "status")
-      .slice(-6)
-      .map((message) => {
-        const speaker = message.role === "user" ? "用户" : message.petId ? this.displayPetName(message.petId) : "宠物";
-        return `${speaker}: ${clip(message.text.replace(/\s+/g, " ").trim(), 90)}`;
-      });
-
-    return summary.length > 0 ? summary.join("\n") : undefined;
-  }
-
-  private displayPetName(petId: PetAgentId): string {
-    if (petId === "engineer-mole") {
-      return "工程鼠";
+  private async archiveLegacyNotes(): Promise<void> {
+    for (const note of Array.from(this.notes.values())) {
+      if (note.schemaVersion >= NOTE_SCHEMA_VERSION || note.archived) {
+        continue;
+      }
+      const nextNote: StoredMemoryNote = {
+        ...note,
+        schemaVersion: NOTE_SCHEMA_VERSION,
+        archived: true,
+        updatedAt: new Date().toISOString(),
+      };
+      await this.writeNote(note.filePath, nextNote);
+      this.notes.set(nextNote.memoryId, nextNote);
     }
-    if (petId === "scholar-panda") {
-      return "博士熊";
+  }
+
+  private async detachMissingSource(sourcePath: string): Promise<void> {
+    const previousIds = this.snapshot.sourceFiles[sourcePath]?.memoryIds ?? [];
+    for (const memoryId of previousIds) {
+      await this.detachSourceFromMemory(memoryId, sourcePath);
     }
-    return "机灵兔";
+  }
+
+  private async detachSourceFromMemory(memoryId: string, sourcePath: string): Promise<void> {
+    const existing = this.notes.get(memoryId);
+    if (!existing) {
+      return;
+    }
+
+    const nextNote = removeSource(existing, sourcePath);
+    nextNote.updatedAt = new Date().toISOString();
+    if (nextNote.sourcePaths.length === 0) {
+      nextNote.archived = true;
+    }
+    nextNote.filePath = buildMemoryNotePath(this.memoryFolderPath, nextNote);
+
+    await this.writeNote(existing.filePath, nextNote);
+    this.notes.set(memoryId, nextNote);
   }
 }

@@ -1,13 +1,17 @@
 import { Notice, Plugin, TAbstractFile, TFile } from "obsidian";
 
-import { LayeredMemoryService } from "./memory";
-import { detectMentionedPets, getPetProfile, getPetRuntimeSettings, normalizePetRuntimeSettings } from "./pets";
+import { type MemoryGitChangeSet, LayeredMemoryService } from "./memory";
+import { buildMemoryExtractionPrompt, parseMemoryExtractionResponse, type MemoryExtractionAtom } from "./memory-extraction";
+import { detectMentionedPets, getPetProfile, getPetRuntimeSettings } from "./pets";
+import { getPetPromptFilePath, PetPromptStore } from "./prompt-store";
 import { CodexCliProvider } from "./provider";
-import { DEFAULT_SETTINGS, PetAgentsSettingTab } from "./settings";
+import { DEFAULT_SETTINGS, normalizeLoadedSettings, PetAgentsSettingTab } from "./settings";
+import { refreshLayeredMemoryFromSlash } from "./slash-actions";
 import type {
   ChatMessage,
   ChatThreadState,
   MemoryContext,
+  MemoryIndexState,
   PetAgentId,
   PetAgentsPluginData,
   PetAgentsSettings,
@@ -16,7 +20,46 @@ import type {
 } from "./types";
 import { PET_AGENTS_VIEW_TYPE, PetAgentsView } from "./view";
 
+declare const require: NodeRequire;
+
+interface ChildProcessModule {
+  execFile: typeof import("child_process").execFile;
+}
+
 const DEFAULT_THREAD_ID = "main";
+
+interface RuntimeState {
+  isBusy: boolean;
+  statusText: string;
+  providerHealth?: ProviderHealth;
+  providerHealthCheckedAt?: number;
+  petStates: Record<PetAgentId, PetVisualState>;
+  activeSpeakerPetId?: PetAgentId;
+  activeWorkerPetId?: PetAgentId;
+  latestAssistantPetId?: PetAgentId;
+}
+
+interface UserTurnInput {
+  displayText: string;
+  promptText: string;
+  queryText: string;
+}
+
+function getRequire(): NodeRequire {
+  const scopedWindow = window as Window & { require?: NodeRequire };
+  if (typeof scopedWindow.require === "function") {
+    return scopedWindow.require;
+  }
+  return require;
+}
+
+function childProcess(): ChildProcessModule {
+  return getRequire()("child_process") as ChildProcessModule;
+}
+
+function isWindowsShell(): boolean {
+  return navigator.userAgent.toLowerCase().includes("windows");
+}
 
 function nowId(prefix: string): string {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -24,6 +67,10 @@ function nowId(prefix: string): string {
 
 function clip(text: string, maxLength: number): string {
   return text.length <= maxLength ? text : `${text.slice(0, Math.max(0, maxLength - 3)).trimEnd()}...`;
+}
+
+function normalizeVaultPath(path: string): string {
+  return path.replace(/\\/g, "/").replace(/\/+/g, "/").replace(/^\/+/, "").replace(/\/+$/, "");
 }
 
 function createDefaultThread(): ChatThreadState {
@@ -47,40 +94,52 @@ function initialPetStates(): Record<PetAgentId, PetVisualState> {
   };
 }
 
-interface RuntimeState {
-  isBusy: boolean;
-  statusText: string;
-  providerHealth?: ProviderHealth;
-  providerHealthCheckedAt?: number;
-  petStates: Record<PetAgentId, PetVisualState>;
-  activeSpeakerPetId?: PetAgentId;
-  activeWorkerPetId?: PetAgentId;
-  latestAssistantPetId?: PetAgentId;
+function createEmptyMemoryIndexState(memoryFolderPath: string): MemoryIndexState {
+  return {
+    schemaVersion: 2,
+    lastSyncAt: 0,
+    lastIndexedCommit: "",
+    sourceFiles: {},
+    memoryFolderPath,
+    activeMemoryCount: 0,
+    archivedMemoryCount: 0,
+  };
+}
+
+function parseGitStatusPaths(output: string): string[] {
+  return output
+    .split(/\r?\n/)
+    .map((line) => line.trimEnd())
+    .filter(Boolean)
+    .flatMap((line) => {
+      const rawPath = line.slice(3).trim();
+      if (rawPath.includes(" -> ")) {
+        const [oldPath, nextPath] = rawPath.split(" -> ").map((item) => normalizeVaultPath(item));
+        return [oldPath, nextPath];
+      }
+      return [normalizeVaultPath(rawPath)];
+    });
 }
 
 export default class PetAgentsPlugin extends Plugin {
   settings: PetAgentsSettings = { ...DEFAULT_SETTINGS };
   pluginData: PetAgentsPluginData = {
     settings: { ...DEFAULT_SETTINGS },
-    memory: {
-      schemaVersion: 1,
-      lastScanAt: 0,
-      records: [],
-      scannedFiles: {},
-    },
+    memory: createEmptyMemoryIndexState(DEFAULT_SETTINGS.memoryFolderPath),
     threads: {
       [DEFAULT_THREAD_ID]: createDefaultThread(),
     },
   };
 
   memoryService!: LayeredMemoryService;
+  promptStore!: PetPromptStore;
   runtimeState: RuntimeState = {
     isBusy: false,
     statusText: "等待输入",
     petStates: initialPetStates(),
   };
 
-  private provider = new CodexCliProvider(() => ({
+  private readonly provider = new CodexCliProvider(() => ({
     executable: this.settings.codexExecutable,
     model: this.settings.codexModel,
     profile: this.settings.codexProfile,
@@ -92,6 +151,8 @@ export default class PetAgentsPlugin extends Plugin {
   async onload(): Promise<void> {
     await this.loadPluginState();
 
+    this.promptStore = new PetPromptStore(this);
+    await this.promptStore.initialize();
     this.memoryService = new LayeredMemoryService(this, this.pluginData.memory);
     this.registerView(PET_AGENTS_VIEW_TYPE, (leaf) => new PetAgentsView(leaf, this));
 
@@ -103,10 +164,10 @@ export default class PetAgentsPlugin extends Plugin {
     });
     this.addCommand({
       id: "pet-agents-rescan-memory",
-      name: "Rescan layered memory",
+      name: "Refresh memory graph",
       callback: async () => {
         await this.memoryService.fullScan(true);
-        this.runtimeState.statusText = "记忆索引已重建。";
+        this.runtimeState.statusText = "记忆图谱已刷新。";
         this.refreshViews();
       },
     });
@@ -135,38 +196,85 @@ export default class PetAgentsPlugin extends Plugin {
 
     this.registerEvent(
       this.app.vault.on("modify", (file) => {
-        if (this.settings.autoScanMemory && file instanceof TFile && file.extension === "md") {
-          void this.memoryService.refreshFile(file).then(() => this.refreshViews());
+        if (this.promptStore.handlesPath(file.path)) {
+          void this.reloadPromptFiles(false);
         }
       }),
     );
     this.registerEvent(
       this.app.vault.on("create", (file) => {
-        if (this.settings.autoScanMemory && file instanceof TFile && file.extension === "md") {
-          void this.memoryService.refreshFile(file).then(() => this.refreshViews());
+        if (this.promptStore.handlesPath(file.path)) {
+          void this.reloadPromptFiles(false);
         }
       }),
     );
     this.registerEvent(
       this.app.vault.on("delete", (file) => {
-        if (this.settings.autoScanMemory) {
-          this.memoryService.removePath(file.path);
-          this.refreshViews();
+        if (this.promptStore.handlesPath(file.path)) {
+          void this.reloadPromptFiles(false);
         }
       }),
     );
     this.registerEvent(
       this.app.vault.on("rename", (file: TAbstractFile, oldPath: string) => {
-        if (!this.settings.autoScanMemory) {
+        if (this.promptStore.handlesPath(oldPath) || this.promptStore.handlesPath(file.path)) {
+          void this.reloadPromptFiles(false);
+        }
+      }),
+    );
+
+    const refreshMemory = () => {
+      void this.memoryService.fullScan(false).then(() => this.refreshViews());
+    };
+
+    this.registerEvent(
+      this.app.vault.on("modify", (file) => {
+        if (
+          this.settings.autoScanMemory &&
+          file instanceof TFile &&
+          file.extension === "md" &&
+          !this.memoryService.isManagedMemoryPath(file.path) &&
+          this.memoryService.isSourcePath(file.path)
+        ) {
+          refreshMemory();
+        }
+      }),
+    );
+    this.registerEvent(
+      this.app.vault.on("create", (file) => {
+        if (
+          this.settings.autoScanMemory &&
+          file instanceof TFile &&
+          file.extension === "md" &&
+          !this.memoryService.isManagedMemoryPath(file.path) &&
+          this.memoryService.isSourcePath(file.path)
+        ) {
+          refreshMemory();
+        }
+      }),
+    );
+    this.registerEvent(
+      this.app.vault.on("delete", (file) => {
+        if (
+          this.settings.autoScanMemory &&
+          !this.memoryService.isManagedMemoryPath(file.path) &&
+          this.memoryService.isSourcePath(file.path)
+        ) {
+          refreshMemory();
+        }
+      }),
+    );
+    this.registerEvent(
+      this.app.vault.on("rename", (file: TAbstractFile, oldPath: string) => {
+        if (
+          !this.settings.autoScanMemory ||
+          this.memoryService.isManagedMemoryPath(oldPath) ||
+          this.memoryService.isManagedMemoryPath(file.path) ||
+          (!this.memoryService.isSourcePath(oldPath) && !this.memoryService.isSourcePath(file.path))
+        ) {
           return;
         }
-
-        this.memoryService.removePath(oldPath);
-        if (file instanceof TFile && file.extension === "md") {
-          void this.memoryService.refreshFile(file).then(() => this.refreshViews());
-        } else {
-          this.refreshViews();
-        }
+        refreshMemory();
       }),
     );
 
@@ -210,15 +318,41 @@ export default class PetAgentsPlugin extends Plugin {
   async handleMemorySettingsChanged(): Promise<void> {
     await this.persistState();
     await this.memoryService.fullScan(true);
-    this.runtimeState.statusText = "记忆扫描范围已更新。";
+    this.runtimeState.statusText = "记忆源目录已更新。";
     this.refreshViews();
+  }
+
+  async reloadPromptFiles(manual: boolean): Promise<void> {
+    await this.promptStore.reloadAll();
+    if (manual) {
+      this.runtimeState.statusText = "宠物提示词已重载。";
+      new Notice("宠物提示词已重载。");
+    }
+    this.refreshViews();
+  }
+
+  getPetPromptPath(petId: PetAgentId): string {
+    return getPetPromptFilePath(petId);
+  }
+
+  async openPetPromptFile(petId: PetAgentId): Promise<void> {
+    await this.promptStore.ensureDefaultFiles();
+    const path = this.getPetPromptPath(petId);
+    const file = this.app.vault.getAbstractFileByPath(path);
+
+    if (!(file instanceof TFile)) {
+      new Notice(`找不到提示词文件：${path}`);
+      return;
+    }
+
+    const leaf = this.app.workspace.getLeaf(true);
+    await leaf.openFile(file);
   }
 
   getActiveThread(): ChatThreadState {
     if (!this.pluginData.threads[DEFAULT_THREAD_ID]) {
       this.pluginData.threads[DEFAULT_THREAD_ID] = createDefaultThread();
     }
-
     return this.pluginData.threads[DEFAULT_THREAD_ID];
   }
 
@@ -257,13 +391,6 @@ export default class PetAgentsPlugin extends Plugin {
     }
 
     const nextState = !thread.engineerTaskMode;
-    if (nextState && this.settings.taskModeConfirmation) {
-      const confirmed = window.confirm(`工程鼠将进入任务模式，权限预设为 ${this.settings.taskExecutionPolicy}。继续吗？`);
-      if (!confirmed) {
-        return;
-      }
-    }
-
     thread.engineerTaskMode = nextState;
     thread.updatedAt = Date.now();
     this.runtimeState.statusText = nextState ? "工程鼠已进入任务模式。" : "工程鼠已回到聊天模式。";
@@ -286,7 +413,14 @@ export default class PetAgentsPlugin extends Plugin {
     this.refreshViews();
   }
 
-  async sendUserMessage(text: string): Promise<void> {
+  async rescanLayeredMemory(manual: boolean): Promise<void> {
+    await refreshLayeredMemoryFromSlash(this);
+    if (manual) {
+      new Notice("记忆图谱已刷新。");
+    }
+  }
+
+  async sendUserMessage(input: string | UserTurnInput): Promise<void> {
     if (this.runtimeState.isBusy) {
       new Notice("当前还有一轮对话在处理中。");
       return;
@@ -299,11 +433,15 @@ export default class PetAgentsPlugin extends Plugin {
       return;
     }
 
+    const displayText = typeof input === "string" ? input : input.displayText;
+    const promptText = typeof input === "string" ? input : input.promptText;
+    const queryText = typeof input === "string" ? input : input.queryText;
     const thread = this.getActiveThread();
+
     thread.messages.push({
       id: nowId("user"),
       role: "user",
-      text,
+      text: displayText,
       timestamp: Date.now(),
     });
     thread.updatedAt = Date.now();
@@ -319,15 +457,17 @@ export default class PetAgentsPlugin extends Plugin {
       const primaryPet = thread.currentPetId;
       const primaryReply = await this.runPetTurn({
         petId: primaryPet,
-        userText: text,
+        userText: promptText,
+        memoryQueryText: queryText,
         collaborator: false,
       });
 
-      const collaborators = detectMentionedPets(text).filter((petId) => petId !== primaryPet);
+      const collaborators = detectMentionedPets(queryText).filter((petId) => petId !== primaryPet);
       for (const petId of collaborators) {
         await this.runPetTurn({
           petId,
-          userText: `${text}\n\n主讲宠物刚刚的回复：\n${primaryReply}`,
+          userText: `${promptText}\n\nPrimary pet reply:\n${primaryReply}`,
+          memoryQueryText: queryText,
           collaborator: true,
         });
       }
@@ -347,14 +487,68 @@ export default class PetAgentsPlugin extends Plugin {
     }
   }
 
-  private async runPetTurn(options: { petId: PetAgentId; userText: string; collaborator: boolean }): Promise<string> {
+  async extractMemoryAtoms(input: { path: string; content: string }): Promise<MemoryExtractionAtom[]> {
+    await this.ensureProviderHealth();
+    if (!this.runtimeState.providerHealth?.ok) {
+      throw new Error(this.runtimeState.providerHealth?.error ?? "Codex 不可用，无法抽取记忆。");
+    }
+
+    const requestId = nowId("memory");
+    const result = await this.provider.runTurn({
+      prompt: buildMemoryExtractionPrompt(input),
+      cwd: this.getVaultBasePath(),
+      mode: "chat",
+      model: this.settings.codexModel || this.settings.petRuntimeSettings["engineer-mole"].model || "gpt-5.4",
+      reasoningEffort: "medium",
+      executionPolicy: "read-only",
+      requestId,
+    });
+
+    return parseMemoryExtractionResponse(result.text);
+  }
+
+  async getGitChanges(sourcePaths: string[], lastIndexedCommit: string): Promise<MemoryGitChangeSet | null> {
+    const normalizedPaths = sourcePaths.map((path) => normalizeVaultPath(path)).filter(Boolean);
+    if (normalizedPaths.length === 0) {
+      return { paths: [], headCommit: "" };
+    }
+
+    try {
+      const headCommit = (await this.execGit(["rev-parse", "HEAD"])).trim();
+      const argsSuffix = ["--", ...normalizedPaths];
+      const committedOutput =
+        lastIndexedCommit && lastIndexedCommit !== headCommit
+          ? await this.execGit(["diff", "--name-only", `${lastIndexedCommit}..${headCommit}`, ...argsSuffix])
+          : "";
+      const statusOutput = await this.execGit(["status", "--porcelain", "--untracked-files=all", ...argsSuffix]);
+      const committedPaths = committedOutput
+        .split(/\r?\n/)
+        .map((line) => normalizeVaultPath(line.trim()))
+        .filter(Boolean);
+      const statusPaths = parseGitStatusPaths(statusOutput);
+
+      return {
+        paths: Array.from(new Set(committedPaths.concat(statusPaths))),
+        headCommit,
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  private async runPetTurn(options: {
+    petId: PetAgentId;
+    userText: string;
+    memoryQueryText: string;
+    collaborator: boolean;
+  }): Promise<string> {
     const thread = this.getActiveThread();
     const pet = getPetProfile(options.petId);
     const petRuntimeSettings = getPetRuntimeSettings(options.petId, this.settings.petRuntimeSettings, this.settings.codexModel || "gpt-5.4");
     const mode = options.petId === "engineer-mole" && thread.engineerTaskMode ? "task" : "chat";
     const memory = this.memoryService.buildContext({
       petId: options.petId,
-      query: options.userText,
+      query: options.memoryQueryText,
       conversation: thread.messages,
     });
     const storedSession = thread.petSessions[options.petId];
@@ -372,7 +566,13 @@ export default class PetAgentsPlugin extends Plugin {
       collaborator: options.collaborator,
       mode,
       memoryHits: memory.capsules.map((item) => item.title),
-      sources: Array.from(new Set(memory.details.concat(memory.capsules).map((item) => item.path))).slice(0, 4),
+      sources: Array.from(
+        new Set(
+          memory.details
+            .concat(memory.capsules)
+            .flatMap((item) => (item.sourcePaths.length > 0 ? item.sourcePaths : [item.path])),
+        ),
+      ).slice(0, 12),
     };
     thread.messages.push(pendingMessage);
 
@@ -389,8 +589,6 @@ export default class PetAgentsPlugin extends Plugin {
       mode,
     });
 
-    const requestId = nowId("turn");
-
     try {
       const result = await this.provider.runTurn(
         {
@@ -401,7 +599,7 @@ export default class PetAgentsPlugin extends Plugin {
           model: petRuntimeSettings.model,
           reasoningEffort: petRuntimeSettings.reasoningEffort,
           executionPolicy: this.settings.taskExecutionPolicy,
-          requestId,
+          requestId: nowId("turn"),
         },
         (event) => {
           if ((event.type === "message-delta" || event.type === "message") && event.text) {
@@ -422,7 +620,6 @@ export default class PetAgentsPlugin extends Plugin {
       pendingMessage.pending = false;
       pendingMessage.text = result.text || pendingMessage.text || "（没有拿到文本输出）";
       pendingMessage.sources = Array.from(new Set(pendingMessage.sources ?? []));
-      pendingMessage.memoryHits = pendingMessage.memoryHits?.slice(0, this.settings.memoryCapsuleLimit);
 
       thread.petSessions[options.petId] = {
         providerSessionId: result.sessionId,
@@ -463,7 +660,7 @@ export default class PetAgentsPlugin extends Plugin {
     mode: "chat" | "task";
   }): string {
     const thread = this.getActiveThread();
-    const profile = getPetProfile(options.petId);
+    const systemPrompt = this.promptStore.getPrompt(options.petId);
     const conversation = thread.messages
       .filter((message) => message.role !== "status")
       .slice(-8)
@@ -474,11 +671,12 @@ export default class PetAgentsPlugin extends Plugin {
       .join("\n");
 
     const memoryCapsules = options.memory.capsules.length > 0 ? options.memory.capsules.map((item) => `- ${item.text}`).join("\n") : "- 无";
-    const memoryDetails =
-      options.memory.details.length > 0 ? options.memory.details.map((item) => `- ${item.path}: ${item.text}`).join("\n") : "- 无";
-    const rabbitGuard =
-      options.petId === "homie-rabbit" && !this.settings.enableProfanityRabbit
-        ? "额外要求：不要主动说脏话，但仍然保持鲜活、直接和共情。"
+    const memoryDetails = options.memory.details.length > 0 ? options.memory.details.map((item) => `- ${item.text}`).join("\n") : "- 无";
+    const rabbitStyle =
+      options.petId === "homie-rabbit"
+        ? this.settings.enableProfanityRabbit
+          ? "额外要求：你是一个温柔、机灵、站在用户这边的女生。可以偶尔说一点轻度、温柔的口头脏话，比如“烦死了”“离谱”“见鬼”“真够呛”，但不要说“操”这种太粗暴的词，也不要攻击用户。"
+          : "额外要求：你是一个温柔、机灵、站在用户这边的女生。不主动说脏话，但仍然保持鲜活、亲近和共情。"
         : "";
 
     const modeRules =
@@ -487,29 +685,37 @@ export default class PetAgentsPlugin extends Plugin {
         : "当前是普通聊天模式。不要运行命令，不要编辑文件，不要假装执行过任何任务。只做文本回答。";
 
     const collaboratorRules = options.collaborator
-      ? "你不是本轮主讲者。请基于主讲宠物刚刚的回复，只补充新的角度、提醒或情绪支持，不要复述已有内容。控制在 4 到 8 句。"
+      ? "你不是本轮主讲者。请基于主讲宠物刚刚的回答，只补充新的角度、提醒或情绪支持，不要复述已有内容。控制在 4 到 8 句。"
       : "你是本轮主讲宠物。保持你的角色设定，优先直接回答用户。";
+    const memorySections = options.memory.relevant
+      ? [
+          "如果引用到记忆，不要装作百分之百确定；能自然就自然，不能自然就不要硬塞。",
+          options.memory.mode === "broad"
+            ? "记忆注入策略：这是显式回忆类问题，优先给出直接命中的记忆摘要，再按双链扩散补充关联上下文。"
+            : "记忆注入策略：这是普通聊天里的高置信实体命中，只注入局部图谱，不做泛化回忆。",
+          "[记忆摘要]",
+          memoryCapsules,
+          "[展开记忆]",
+          memoryDetails,
+        ]
+      : [];
 
     return [
       "你正在 Obsidian 插件内回复用户。",
-      `角色设定：${profile.systemPrompt}`,
-      rabbitGuard,
+      "角色设定（来自 vault 提示词文件）：",
+      systemPrompt,
+      rabbitStyle,
       modeRules,
       collaboratorRules,
-      "如果引用到记忆，不要装作百分之百确定；能自然就自然，不能自然就不要硬塞。",
-      "记忆注入策略：先用关键记忆，不够时再参考细节记忆。",
       "[当前会话摘要]",
       options.memory.sessionSummary ?? "无",
-      "[关键记忆胶囊]",
-      memoryCapsules,
-      "[可按需展开的细节记忆]",
-      memoryDetails,
+      ...memorySections,
       "[最近对话]",
       conversation || "无",
       "[用户本轮输入]",
       options.userText,
       "[回答要求]",
-      "用中文回复。保持角色感，不要提到你在读提示词。必要时可以分段，但不要啰嗦。",
+      "用中文回答。保持角色感，不要提到你在读提示词。必要时可以分段，但不要啰嗦。",
     ]
       .filter(Boolean)
       .join("\n\n");
@@ -517,24 +723,12 @@ export default class PetAgentsPlugin extends Plugin {
 
   private async loadPluginState(): Promise<void> {
     const stored = (await this.loadData()) as Partial<PetAgentsPluginData> | null;
+    const { settings, migrated } = normalizeLoadedSettings(stored?.settings);
 
-    this.settings = {
-      ...DEFAULT_SETTINGS,
-      ...stored?.settings,
-    };
-    this.settings.petRuntimeSettings = normalizePetRuntimeSettings(
-      stored?.settings?.petRuntimeSettings,
-      this.settings.codexModel || "gpt-5.4",
-    );
-
+    this.settings = settings;
     this.pluginData = {
       settings: this.settings,
-      memory: stored?.memory ?? {
-        schemaVersion: 1,
-        lastScanAt: 0,
-        records: [],
-        scannedFiles: {},
-      },
+      memory: (stored?.memory as MemoryIndexState | undefined) ?? createEmptyMemoryIndexState(this.settings.memoryFolderPath),
       threads:
         stored?.threads && Object.keys(stored.threads).length > 0
           ? stored.threads
@@ -542,6 +736,10 @@ export default class PetAgentsPlugin extends Plugin {
               [DEFAULT_THREAD_ID]: createDefaultThread(),
             },
     };
+
+    if (migrated) {
+      await this.saveData(this.pluginData);
+    }
   }
 
   private buildThreadSummary(messages: ChatMessage[]): string {
@@ -576,12 +774,31 @@ export default class PetAgentsPlugin extends Plugin {
     }
   }
 
-  private getVaultBasePath(): string {
+  private async execGit(args: string[]): Promise<string> {
+    const basePath = this.getVaultBasePath();
+    return await new Promise<string>((resolve, reject) => {
+      childProcess().execFile(
+        "git",
+        ["-C", basePath, ...args],
+        { shell: isWindowsShell() },
+        (error, stdout, stderr) => {
+          if (error) {
+            reject(error);
+            return;
+          }
+
+          resolve((stdout || stderr).trim());
+        },
+      );
+    });
+  }
+
+  getVaultBasePath(): string {
     const adapter = this.app.vault.adapter as { getBasePath?: () => string; basePath?: string };
     const basePath = adapter.getBasePath?.() ?? adapter.basePath;
 
     if (!basePath) {
-      throw new Error("当前 vault 不是本地桌面仓库，无法调用本机 Codex。");
+      throw new Error("当前 vault 不是本地桌面仓库，无法调用本地 Codex。");
     }
 
     return basePath;
