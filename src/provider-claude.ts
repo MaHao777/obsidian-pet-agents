@@ -8,82 +8,41 @@ import type {
   ProviderTurnRequest,
   ProviderTurnResult,
 } from "./types";
-import { resolveExecutionPolicy } from "./runtime-policies";
 
-export interface CodexProviderOptions {
+export interface ClaudeProviderOptions {
   executable: string;
   model: string;
-  profile: string;
 }
 
-function pushRootArgs(args: string[], options: CodexProviderOptions, request: ProviderTurnRequest): void {
-  if (options.profile.trim()) {
-    args.push("--profile", options.profile.trim());
-  }
+export function buildClaudeTurnArgs(options: ClaudeProviderOptions, request: ProviderTurnRequest): string[] {
+  const args: string[] = ["--print", "--output-format", "stream-json", "--max-turns", "1"];
 
   const effectiveModel = request.model?.trim() || options.model.trim();
   if (effectiveModel) {
     args.push("--model", effectiveModel);
   }
 
-  if (request.reasoningEffort) {
-    args.push("-c", `reasoning_effort="${request.reasoningEffort}"`);
-  }
-}
-
-function pushNewSessionPolicy(args: string[], request: ProviderTurnRequest): void {
-  const policy = resolveExecutionPolicy(request.mode, request.executionPolicy);
-  if (policy === "read-only") {
-    args.push("--sandbox", "read-only");
-    return;
-  }
-
-  args.push("--dangerously-bypass-approvals-and-sandbox");
-}
-
-function pushResumePolicy(args: string[], request: ProviderTurnRequest): void {
-  const policy = resolveExecutionPolicy(request.mode, request.executionPolicy);
-  if (policy === "read-only") {
-    return;
-  }
-
-  args.push("--dangerously-bypass-approvals-and-sandbox");
-}
-
-export function buildCodexTurnArgs(options: CodexProviderOptions, request: ProviderTurnRequest): string[] {
-  const args: string[] = [];
-
-  pushRootArgs(args, options, request);
-  args.push("exec");
-
   if (request.sessionId) {
-    args.push("resume", "--json", "--skip-git-repo-check");
-    pushResumePolicy(args, request);
-    args.push(request.sessionId, "-");
-    return args;
+    args.push("--resume", request.sessionId);
   }
 
-  args.push("--json", "--skip-git-repo-check");
-  pushNewSessionPolicy(args, request);
-  args.push("-");
   return args;
 }
 
-export class CodexCliProvider implements ProviderAdapter {
+export class ClaudeCodeProvider implements ProviderAdapter {
   private readonly runningTurns = new Map<string, ChildProcessWithoutNullStreams>();
 
-  constructor(private readonly getOptions: () => CodexProviderOptions) {}
+  constructor(private readonly getOptions: () => ClaudeProviderOptions) {}
 
   async healthCheck(): Promise<ProviderHealth> {
     const options = this.getOptions();
 
     try {
       const version = await execCli(options.executable, ["--version"]);
-      const loginStatus = await execCli(options.executable, ["login", "status"]);
       return {
         ok: true,
         version,
-        loginStatus,
+        loginStatus: "ok",
       };
     } catch (error) {
       return {
@@ -95,7 +54,7 @@ export class CodexCliProvider implements ProviderAdapter {
 
   async runTurn(request: ProviderTurnRequest, onEvent?: (event: ProviderStreamEvent) => void): Promise<ProviderTurnResult> {
     const options = this.getOptions();
-    const args = buildCodexTurnArgs(options, request);
+    const args = buildClaudeTurnArgs(options, request);
 
     const child = spawnCli(options.executable, args, request.cwd);
     this.runningTurns.set(request.requestId, child);
@@ -121,36 +80,55 @@ export class CodexCliProvider implements ProviderAdapter {
           try {
             const event = JSON.parse(line) as {
               type?: string;
-              thread_id?: string;
-              delta?: string;
-              item?: { type?: string; text?: string };
+              session_id?: string;
+              conversation_id?: string;
+              content_block_delta?: { delta?: { text?: string } };
+              message?: { content?: Array<{ type?: string; text?: string }> };
+              result?: { text?: string; session_id?: string };
+              delta?: { text?: string };
+              [key: string]: unknown;
             };
 
             switch (event.type) {
-              case "thread.started":
-                sessionId = event.thread_id ?? sessionId;
-                onEvent?.({ type: "thread-started", threadId: sessionId, raw: event });
-                break;
-              case "turn.started":
-                onEvent?.({ type: "turn-started", raw: event });
-                break;
-              case "item.delta":
-                if (event.delta) {
-                  collectedText += event.delta;
-                  onEvent?.({ type: "message-delta", text: event.delta, raw: event });
+              case "system": {
+                const sid = event.session_id ?? event.conversation_id;
+                if (typeof sid === "string") {
+                  sessionId = sid;
+                  onEvent?.({ type: "thread-started", threadId: sid, raw: event });
                 }
                 break;
-              case "item.completed":
-                if (event.item?.type === "agent_message") {
-                  collectedText = event.item.text ?? collectedText;
+              }
+              case "assistant": {
+                const msgContent = event.message?.content;
+                if (Array.isArray(msgContent)) {
+                  const textBlock = msgContent.find((block) => block.type === "text");
+                  if (textBlock?.text) {
+                    collectedText = textBlock.text;
+                    onEvent?.({ type: "message", text: collectedText, raw: event });
+                  }
+                }
+                break;
+              }
+              case "content_block_delta": {
+                const deltaText = event.content_block_delta?.delta?.text ?? event.delta?.text;
+                if (deltaText) {
+                  collectedText += deltaText;
+                  onEvent?.({ type: "message-delta", text: deltaText, raw: event });
+                }
+                break;
+              }
+              case "result": {
+                if (event.result?.session_id) {
+                  sessionId = event.result.session_id;
+                }
+                if (event.result?.text) {
+                  collectedText = event.result.text;
                   onEvent?.({ type: "message", text: collectedText, raw: event });
                 }
-                break;
-              case "turn.completed":
                 onEvent?.({ type: "turn-completed", raw: event });
                 break;
+              }
               default:
-                onEvent?.({ type: "stderr", text: line, raw: event });
                 break;
             }
           } catch {
@@ -205,7 +183,7 @@ export class CodexCliProvider implements ProviderAdapter {
           return;
         }
 
-        reject(new Error(stderrLines.join("\n") || `Codex exited with code ${code ?? "unknown"}`));
+        reject(new Error(stderrLines.join("\n") || `Claude Code exited with code ${code ?? "unknown"}`));
       });
     });
   }
